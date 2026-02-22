@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<title>Messenger Login</title>
+</head>
+<body>
+
+<div class="auth">
+<h2>Messenger</h2>
+<input id="username" placeholder="Username">
+<input id="password" type="password" placeholder="Password">
+<button onclick="login()">Login</button>
+<button onclick="register()">Register</button>
+</div>
+
+<script>
+async function register(){
+ await fetch("/register",{
+  method:"POST",
+  headers:{"Content-Type":"application/json"},
+  body:JSON.stringify({
+    username:username.value,
+    password:password.value
+  })
+ })
+ alert("Registered")
+}
+
+async function login(){
+ const res = await fetch("/login",{
+  method:"POST",
+  headers:{"Content-Type":"application/json"},
+  body:JSON.stringify({
+    username:username.value,
+    password:password.value
+  })
+ })
+ const data = await res.json()
+ if(data.token){
+   localStorage.setItem("token",data.token)
+   location="chat.html"
+ } else {
+   alert(data.error)
+ }
+}
+</script>
+
+</body>
+</html>
