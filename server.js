@@ -1,139 +1,145 @@
 const express = require("express")
-const bcrypt = require("bcryptjs")
-const jwt = require("jsonwebtoken")
-const Database = require("better-sqlite3")
-const WebSocket = require("ws")
 const http = require("http")
+const WebSocket = require("ws")
+const Database = require("better-sqlite3")
 const path = require("path")
-
-const SECRET = "supersecretkey"
 
 const app = express()
 app.use(express.json())
 app.use(express.static(path.join(__dirname, "public")))
 
+const server = http.createServer(app)
+const wss = new WebSocket.Server({ server })
+
+const PORT = process.env.PORT || 3000
 const db = new Database("messenger.db")
 
-// 📌 Создание базы
+// ---------------- DATABASE ----------------
+
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  username TEXT UNIQUE,
-  password TEXT,
-  strikes INTEGER DEFAULT 0,
-  bannedUntil INTEGER DEFAULT 0,
-  permanentBan INTEGER DEFAULT 0
+  username TEXT UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS chats (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT,
+  type TEXT  -- private | group | channel
+);
+
+CREATE TABLE IF NOT EXISTS chat_members (
+  chatId INTEGER,
+  username TEXT
 );
 
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  chatId INTEGER,
   sender TEXT,
   text TEXT,
   createdAt INTEGER
 );
 `)
 
-// 🚨 авто-модерация
-const bannedWords = ["violence", "terror", "kill"]
+// ---------------- ONLINE USERS ----------------
 
-function containsBad(text) {
-  return bannedWords.some(w =>
-    text.toLowerCase().includes(w)
-  )
-}
+let onlineUsers = {}
 
-// 🔐 регистрация
-app.post("/register", async (req, res) => {
-  const { username, password } = req.body
-  const hash = await bcrypt.hash(password, 10)
+// ---------------- REST API ----------------
 
+// создать пользователя
+app.post("/register", (req, res) => {
+  const { username } = req.body
   try {
-    db.prepare("INSERT INTO users (username,password) VALUES (?,?)")
-      .run(username, hash)
+    db.prepare("INSERT INTO users (username) VALUES (?)").run(username)
     res.json({ ok: true })
   } catch {
-    res.status(400).json({ error: "Username taken" })
+    res.status(400).json({ error: "User exists" })
   }
 })
 
-// 🔑 логин
-app.post("/login", async (req, res) => {
-  const { username, password } = req.body
+// создать чат
+app.post("/create-chat", (req, res) => {
+  const { name, type, members } = req.body
 
-  const user = db.prepare("SELECT * FROM users WHERE username=?")
-    .get(username)
+  const result = db.prepare(
+    "INSERT INTO chats (name,type) VALUES (?,?)"
+  ).run(name, type)
 
-  if (!user) return res.status(400).json({ error: "User not found" })
+  const chatId = result.lastInsertRowid
 
-  const valid = await bcrypt.compare(password, user.password)
-  if (!valid) return res.status(400).json({ error: "Wrong password" })
+  members.forEach(member => {
+    db.prepare(
+      "INSERT INTO chat_members (chatId,username) VALUES (?,?)"
+    ).run(chatId, member)
+  })
 
-  if (user.permanentBan)
-    return res.status(403).json({ error: "Permanent ban" })
-
-  if (Date.now() < user.bannedUntil)
-    return res.status(403).json({ error: "Temporary ban" })
-
-  const token = jwt.sign({ username }, SECRET)
-  res.json({ token })
+  res.json({ chatId })
 })
 
-// 🔍 поиск
-app.get("/search/:username", (req, res) => {
-  const user = db.prepare("SELECT username FROM users WHERE username=?")
-    .get(req.params.username)
+// получить чаты пользователя
+app.get("/user-chats/:username", (req, res) => {
+  const username = req.params.username
 
-  if (!user) return res.json({ found: false })
-  res.json({ found: true, username: user.username })
+  const chats = db.prepare(`
+    SELECT chats.*
+    FROM chats
+    JOIN chat_members ON chats.id = chat_members.chatId
+    WHERE chat_members.username = ?
+  `).all(username)
+
+  res.json(chats)
 })
 
-// 🌐 WebSocket
-const server = http.createServer(app)
-const wss = new WebSocket.Server({ server })
+// ---------------- WEBSOCKET ----------------
 
 wss.on("connection", ws => {
+
   ws.on("message", msg => {
     const data = JSON.parse(msg)
 
-    const user = db.prepare("SELECT * FROM users WHERE username=?")
-      .get(data.sender)
-
-    if (!user) return
-
-    if (containsBad(data.text)) {
-      let strikes = user.strikes + 1
-      let bannedUntil = 0
-      let permanent = 0
-
-      if (strikes === 1)
-        bannedUntil = Date.now() + 7 * 24 * 60 * 60 * 1000
-      else if (strikes === 2)
-        bannedUntil = Date.now() + 21 * 24 * 60 * 60 * 1000
-      else
-        permanent = 1
-
-      db.prepare(`
-        UPDATE users
-        SET strikes=?, bannedUntil=?, permanentBan=?
-        WHERE username=?
-      `).run(strikes, bannedUntil, permanent, data.sender)
-
-      ws.send(JSON.stringify({ banned: true }))
+    // подключение
+    if (data.type === "join") {
+      onlineUsers[data.username] = ws
       return
     }
 
-    db.prepare(`
-      INSERT INTO messages (sender,text,createdAt)
-      VALUES (?,?,?)
-    `).run(data.sender, data.text, Date.now())
+    // отправка сообщения
+    if (data.type === "sendMessage") {
 
-    wss.clients.forEach(client => {
-      if (client.readyState === WebSocket.OPEN)
-        client.send(JSON.stringify(data))
-    })
+      db.prepare(`
+        INSERT INTO messages (chatId,sender,text,createdAt)
+        VALUES (?,?,?,?)
+      `).run(data.chatId, data.sender, data.text, Date.now())
+
+      const members = db.prepare(
+        "SELECT username FROM chat_members WHERE chatId=?"
+      ).all(data.chatId)
+
+      members.forEach(member => {
+        const userSocket = onlineUsers[member.username]
+        if (userSocket) {
+          userSocket.send(JSON.stringify({
+            type: "newMessage",
+            chatId: data.chatId,
+            sender: data.sender,
+            text: data.text
+          }))
+        }
+      })
+    }
+  })
+
+  ws.on("close", () => {
+    for (let user in onlineUsers) {
+      if (onlineUsers[user] === ws) {
+        delete onlineUsers[user]
+      }
+    }
   })
 })
 
-server.listen(3000, () =>
-  console.log("Server running on http://localhost:3000")
-)
+server.listen(PORT, () => {
+  console.log("Running on port " + PORT)
+})
