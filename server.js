@@ -14,7 +14,7 @@ const server = http.createServer(app)
 const wss = new WebSocket.Server({ server })
 
 const PORT = process.env.PORT || 3000
-const SECRET = "UltraSecretKey"
+const SECRET = "SuperSecretKey"
 
 const db = new Database("messenger.db")
 
@@ -32,20 +32,10 @@ CREATE TABLE IF NOT EXISTS friends (
   user2 TEXT
 );
 
-CREATE TABLE IF NOT EXISTS friend_requests (
-  fromUser TEXT,
-  toUser TEXT
-);
-
 CREATE TABLE IF NOT EXISTS chats (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT,
-  type TEXT
-);
-
-CREATE TABLE IF NOT EXISTS chat_members (
-  chatId INTEGER,
-  username TEXT
+  user1 TEXT,
+  user2 TEXT
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -106,22 +96,17 @@ function verify(req, res, next) {
 
 app.post("/add-friend", verify, (req, res) => {
   const { friend } = req.body
-  db.prepare("INSERT INTO friend_requests VALUES (?,?)")
+
+  // добавить в друзья
+  db.prepare("INSERT INTO friends VALUES (?,?)")
     .run(req.user, friend)
-  res.json({ ok: true })
-})
-
-app.post("/accept-friend", verify, (req, res) => {
-  const { fromUser } = req.body
-
-  db.prepare("DELETE FROM friend_requests WHERE fromUser=? AND toUser=?")
-    .run(fromUser, req.user)
 
   db.prepare("INSERT INTO friends VALUES (?,?)")
-    .run(fromUser, req.user)
+    .run(friend, req.user)
 
-  db.prepare("INSERT INTO friends VALUES (?,?)")
-    .run(req.user, fromUser)
+  // создать приватный чат
+  db.prepare("INSERT INTO chats (user1,user2) VALUES (?,?)")
+    .run(req.user, friend)
 
   res.json({ ok: true })
 })
@@ -132,40 +117,22 @@ app.get("/friends", verify, (req, res) => {
   res.json(friends)
 })
 
-// ---------------- CHAT CREATION ----------------
+// ---------------- LOAD MESSAGES ----------------
 
-app.post("/create-chat", verify, (req, res) => {
-  const { name, type, members } = req.body
+app.get("/chat/:friend", verify, (req, res) => {
+  const friend = req.params.friend
 
-  const result = db.prepare(
-    "INSERT INTO chats (name,type) VALUES (?,?)"
-  ).run(name, type)
+  const chat = db.prepare(`
+    SELECT * FROM chats
+    WHERE (user1=? AND user2=?)
+    OR (user1=? AND user2=?)
+  `).get(req.user, friend, friend, req.user)
 
-  const chatId = result.lastInsertRowid
+  if (!chat) return res.json([])
 
-  members.forEach(member => {
-    db.prepare("INSERT INTO chat_members VALUES (?,?)")
-      .run(chatId, member)
-  })
-
-  res.json({ chatId })
-})
-
-app.get("/user-chats", verify, (req, res) => {
-  const chats = db.prepare(`
-    SELECT chats.*
-    FROM chats
-    JOIN chat_members ON chats.id = chat_members.chatId
-    WHERE chat_members.username=?
-  `).all(req.user)
-
-  res.json(chats)
-})
-
-app.get("/chat-messages/:id", verify, (req, res) => {
   const messages = db.prepare(
     "SELECT * FROM messages WHERE chatId=?"
-  ).all(req.params.id)
+  ).all(chat.id)
 
   res.json(messages)
 })
@@ -184,28 +151,30 @@ wss.on("connection", ws => {
       return
     }
 
-    if (data.type === "sendMessage") {
+    if (data.type === "privateMessage") {
+
+      const chat = db.prepare(`
+        SELECT * FROM chats
+        WHERE (user1=? AND user2=?)
+        OR (user1=? AND user2=?)
+      `).get(data.sender, data.to, data.to, data.sender)
+
+      if (!chat) return
 
       db.prepare(`
         INSERT INTO messages (chatId,sender,text,createdAt)
         VALUES (?,?,?,?)
-      `).run(data.chatId, data.sender, data.text, Date.now())
+      `).run(chat.id, data.sender, data.text, Date.now())
 
-      const members = db.prepare(
-        "SELECT username FROM chat_members WHERE chatId=?"
-      ).all(data.chatId)
+      const targetSocket = onlineUsers[data.to]
 
-      members.forEach(member => {
-        const userSocket = onlineUsers[member.username]
-        if (userSocket) {
-          userSocket.send(JSON.stringify({
-            type: "newMessage",
-            chatId: data.chatId,
-            sender: data.sender,
-            text: data.text
-          }))
-        }
-      })
+      if (targetSocket) {
+        targetSocket.send(JSON.stringify({
+          type: "privateMessage",
+          sender: data.sender,
+          text: data.text
+        }))
+      }
     }
   })
 
@@ -218,5 +187,5 @@ wss.on("connection", ws => {
 })
 
 server.listen(PORT, () => {
-  console.log("Messenger 3.0 running")
+  console.log("Messenger fixed and running")
 })
