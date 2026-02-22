@@ -1,10 +1,50 @@
-let currentUser = prompt("Username?")
-let currentChatId = null
+const token = localStorage.getItem("token")
+
+if (!token && location.pathname.includes("chat"))
+  window.location.href = "index.html"
+
+function login() {
+  fetch("/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      username: username.value,
+      password: password.value
+    })
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.token) {
+      localStorage.setItem("token", data.token)
+      window.location.href = "chat.html"
+    } else alert(data.error)
+  })
+}
+
+function register() {
+  fetch("/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      username: username.value,
+      password: password.value
+    })
+  })
+  .then(r => r.json())
+  .then(data => alert(data.ok ? "Registered" : data.error))
+}
+
+let currentUser
+fetch("/verify", {
+  headers: { Authorization: "Bearer " + token }
+})
+.then(r => r.json())
+.then(data => currentUser = data.user)
 
 const ws = new WebSocket(
-  window.location.protocol === "https:"
-    ? "wss://" + window.location.host
-    : "ws://" + window.location.host
+  location.protocol === "https:"
+    ? "wss://" + location.host
+    : "ws://" + location.host
 )
 
 ws.onopen = () => {
@@ -12,78 +52,56 @@ ws.onopen = () => {
     type: "join",
     username: currentUser
   }))
-  loadChats()
 }
 
 ws.onmessage = e => {
   const data = JSON.parse(e.data)
-
-  if (data.type === "newMessage" && data.chatId == currentChatId) {
+  if (data.type === "privateMessage")
     addMessage(data.sender + ": " + data.text)
-  }
 }
 
-function loadChats() {
-  fetch("/user-chats/" + currentUser)
-    .then(r => r.json())
-    .then(chats => {
-      const list = document.getElementById("chatList")
-      list.innerHTML = ""
-
-      chats.forEach(chat => {
-        const li = document.createElement("li")
-        li.textContent = chat.name
-        li.onclick = () => {
-          currentChatId = chat.id
-          document.getElementById("messages").innerHTML = ""
-        }
-        list.appendChild(li)
-      })
+function loadFriends() {
+  fetch("/friends", {
+    headers: { Authorization: "Bearer " + token }
+  })
+  .then(r => r.json())
+  .then(friends => {
+    friendsList.innerHTML = ""
+    friends.forEach(f => {
+      const li = document.createElement("li")
+      li.textContent = f.user2
+      li.onclick = () => currentChat = f.user2
+      friendsList.appendChild(li)
     })
+  })
+}
+
+function addFriend() {
+  fetch("/add-friend", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer " + token
+    },
+    body: JSON.stringify({
+      friend: addFriendInput.value
+    })
+  }).then(loadFriends)
 }
 
 function send() {
-  const text = document.getElementById("text").value
-
   ws.send(JSON.stringify({
-    type: "sendMessage",
-    chatId: currentChatId,
+    type: "privateMessage",
     sender: currentUser,
-    text: text
+    to: currentChat,
+    text: text.value
   }))
-
-  addMessage("Me: " + text)
-  document.getElementById("text").value = ""
+  addMessage("Me: " + text.value)
+  text.value = ""
 }
 
-function addMessage(text) {
+function addMessage(textMsg) {
   const div = document.createElement("div")
-  div.textContent = text
-  document.getElementById("messages").appendChild(div)
-}
-
-function createGroup() {
-  const name = prompt("Group name?")
-  fetch("/create-chat", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      name,
-      type: "group",
-      members: [currentUser]
-    })
-  }).then(loadChats)
-}
-
-function createChannel() {
-  const name = prompt("Channel name?")
-  fetch("/create-chat", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      name,
-      type: "channel",
-      members: [currentUser]
-    })
-  }).then(loadChats)
+  div.textContent = textMsg
+  messages.appendChild(div)
 }
