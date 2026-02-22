@@ -3,44 +3,20 @@ const token = localStorage.getItem("token")
 if (!token && location.pathname.includes("chat"))
   window.location.href = "index.html"
 
-function login() {
-  fetch("/login", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      username: username.value,
-      password: password.value
-    })
-  })
-  .then(r => r.json())
-  .then(data => {
-    if (data.token) {
-      localStorage.setItem("token", data.token)
-      window.location.href = "chat.html"
-    } else alert(data.error)
-  })
-}
+let currentUser = null
+let currentChat = null
 
-function register() {
-  fetch("/register", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      username: username.value,
-      password: password.value
-    })
-  })
-  .then(r => r.json())
-  .then(data => alert(data.ok ? "Registered" : data.error))
-}
-
-let currentUser
+// Получаем пользователя
 fetch("/verify", {
   headers: { Authorization: "Bearer " + token }
 })
 .then(r => r.json())
-.then(data => currentUser = data.user)
+.then(data => {
+  currentUser = data.user
+  loadFriends()
+})
 
+// WebSocket
 const ws = new WebSocket(
   location.protocol === "https:"
     ? "wss://" + location.host
@@ -48,17 +24,25 @@ const ws = new WebSocket(
 )
 
 ws.onopen = () => {
-  ws.send(JSON.stringify({
-    type: "join",
-    username: currentUser
-  }))
+  if (currentUser) {
+    ws.send(JSON.stringify({
+      type: "join",
+      username: currentUser
+    }))
+  }
 }
 
 ws.onmessage = e => {
   const data = JSON.parse(e.data)
-  if (data.type === "privateMessage")
-    addMessage(data.sender + ": " + data.text)
+
+  if (data.type === "privateMessage") {
+    if (data.sender === currentChat) {
+      addMessage(data.sender + ": " + data.text)
+    }
+  }
 }
+
+// ---------------- FRIENDS ----------------
 
 function loadFriends() {
   fetch("/friends", {
@@ -66,42 +50,77 @@ function loadFriends() {
   })
   .then(r => r.json())
   .then(friends => {
-    friendsList.innerHTML = ""
+    const list = document.getElementById("friendsList")
+    list.innerHTML = ""
+
     friends.forEach(f => {
       const li = document.createElement("li")
       li.textContent = f.user2
-      li.onclick = () => currentChat = f.user2
-      friendsList.appendChild(li)
+
+      li.onclick = () => openChat(f.user2)
+
+      list.appendChild(li)
+    })
+  })
+}
+
+function openChat(friend) {
+  currentChat = friend
+  document.getElementById("messages").innerHTML = ""
+
+  fetch("/chat/" + friend, {
+    headers: { Authorization: "Bearer " + token }
+  })
+  .then(r => r.json())
+  .then(messages => {
+    messages.forEach(m => {
+      addMessage(m.sender + ": " + m.text)
     })
   })
 }
 
 function addFriend() {
+  const friend = document.getElementById("addFriendInput").value
+
   fetch("/add-friend", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: "Bearer " + token
     },
-    body: JSON.stringify({
-      friend: addFriendInput.value
-    })
-  }).then(loadFriends)
+    body: JSON.stringify({ friend })
+  })
+  .then(r => r.json())
+  .then(() => {
+    document.getElementById("addFriendInput").value = ""
+    loadFriends()
+  })
 }
 
+// ---------------- SEND MESSAGE ----------------
+
 function send() {
+  if (!currentChat) {
+    alert("Select a friend first")
+    return
+  }
+
+  const textInput = document.getElementById("text")
+  const text = textInput.value
+
   ws.send(JSON.stringify({
     type: "privateMessage",
     sender: currentUser,
     to: currentChat,
-    text: text.value
+    text: text
   }))
-  addMessage("Me: " + text.value)
-  text.value = ""
+
+  addMessage("Me: " + text)
+  textInput.value = ""
 }
 
-function addMessage(textMsg) {
+function addMessage(text) {
   const div = document.createElement("div")
-  div.textContent = textMsg
-  messages.appendChild(div)
+  div.textContent = text
+  document.getElementById("messages").appendChild(div)
 }
