@@ -14,7 +14,7 @@ const server = http.createServer(app)
 const wss = new WebSocket.Server({ server })
 
 const PORT = process.env.PORT || 3000
-const SECRET = "UltraSecretKey"
+const SECRET = "SuperSecretKey"
 
 const db = new Database("messenger.db")
 
@@ -30,15 +30,10 @@ CREATE TABLE IF NOT EXISTS friends (
   user2 TEXT
 );
 
-CREATE TABLE IF NOT EXISTS chats (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user1 TEXT,
-  user2 TEXT
-);
-
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  chatId INTEGER,
+  user1 TEXT,
+  user2 TEXT,
   sender TEXT,
   text TEXT,
   createdAt INTEGER
@@ -49,6 +44,9 @@ CREATE TABLE IF NOT EXISTS messages (
 
 app.post("/register", async (req, res) => {
   const { username, password } = req.body
+  if (!username || !password)
+    return res.status(400).json({ error: "Fill fields" })
+
   const hash = await bcrypt.hash(password, 10)
 
   try {
@@ -95,14 +93,17 @@ function verify(req, res, next) {
 app.post("/add-friend", verify, (req, res) => {
   const { friend } = req.body
 
+  const exists = db.prepare("SELECT * FROM users WHERE username=?")
+    .get(friend)
+
+  if (!exists)
+    return res.status(400).json({ error: "User not found" })
+
   db.prepare("INSERT INTO friends VALUES (?,?)")
     .run(req.user, friend)
 
   db.prepare("INSERT INTO friends VALUES (?,?)")
     .run(friend, req.user)
-
-  db.prepare("INSERT INTO chats (user1,user2) VALUES (?,?)")
-    .run(req.user, friend)
 
   res.json({ ok: true })
 })
@@ -113,20 +114,15 @@ app.get("/friends", verify, (req, res) => {
   res.json(friends)
 })
 
-app.get("/chat/:friend", verify, (req, res) => {
+app.get("/messages/:friend", verify, (req, res) => {
   const friend = req.params.friend
 
-  const chat = db.prepare(`
-    SELECT * FROM chats
+  const messages = db.prepare(`
+    SELECT * FROM messages
     WHERE (user1=? AND user2=?)
     OR (user1=? AND user2=?)
-  `).get(req.user, friend, friend, req.user)
-
-  if (!chat) return res.json([])
-
-  const messages = db.prepare(
-    "SELECT * FROM messages WHERE chatId=?"
-  ).all(chat.id)
+    ORDER BY createdAt ASC
+  `).all(req.user, friend, friend, req.user)
 
   res.json(messages)
 })
@@ -147,18 +143,16 @@ wss.on("connection", ws => {
 
     if (data.type === "privateMessage") {
 
-      const chat = db.prepare(`
-        SELECT * FROM chats
-        WHERE (user1=? AND user2=?)
-        OR (user1=? AND user2=?)
-      `).get(data.sender, data.to, data.to, data.sender)
-
-      if (!chat) return
-
       db.prepare(`
-        INSERT INTO messages (chatId,sender,text,createdAt)
-        VALUES (?,?,?,?)
-      `).run(chat.id, data.sender, data.text, Date.now())
+        INSERT INTO messages (user1,user2,sender,text,createdAt)
+        VALUES (?,?,?,?,?)
+      `).run(
+        data.sender,
+        data.to,
+        data.sender,
+        data.text,
+        Date.now()
+      )
 
       const target = onlineUsers[data.to]
       if (target) {
@@ -180,5 +174,5 @@ wss.on("connection", ws => {
 })
 
 server.listen(PORT, () => {
-  console.log("Messenger running")
+  console.log("Server running")
 })
