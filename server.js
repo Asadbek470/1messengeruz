@@ -14,11 +14,9 @@ const server = http.createServer(app)
 const wss = new WebSocket.Server({ server })
 
 const PORT = process.env.PORT || 3000
-const SECRET = "SuperSecretKey"
+const SECRET = "UltraSecretKey"
 
 const db = new Database("messenger.db")
-
-// ---------------- DATABASE ----------------
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
@@ -47,7 +45,7 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 `)
 
-// ---------------- AUTH ----------------
+// ---------- AUTH ----------
 
 app.post("/register", async (req, res) => {
   const { username, password } = req.body
@@ -92,19 +90,17 @@ function verify(req, res, next) {
   }
 }
 
-// ---------------- FRIEND SYSTEM ----------------
+// ---------- FRIENDS ----------
 
 app.post("/add-friend", verify, (req, res) => {
   const { friend } = req.body
 
-  // добавить в друзья
   db.prepare("INSERT INTO friends VALUES (?,?)")
     .run(req.user, friend)
 
   db.prepare("INSERT INTO friends VALUES (?,?)")
     .run(friend, req.user)
 
-  // создать приватный чат
   db.prepare("INSERT INTO chats (user1,user2) VALUES (?,?)")
     .run(req.user, friend)
 
@@ -116,8 +112,6 @@ app.get("/friends", verify, (req, res) => {
     .all(req.user)
   res.json(friends)
 })
-
-// ---------------- LOAD MESSAGES ----------------
 
 app.get("/chat/:friend", verify, (req, res) => {
   const friend = req.params.friend
@@ -137,7 +131,7 @@ app.get("/chat/:friend", verify, (req, res) => {
   res.json(messages)
 })
 
-// ---------------- WEBSOCKET ----------------
+// ---------- WEBSOCKET ----------
 
 let onlineUsers = {}
 
@@ -166,10 +160,9 @@ wss.on("connection", ws => {
         VALUES (?,?,?,?)
       `).run(chat.id, data.sender, data.text, Date.now())
 
-      const targetSocket = onlineUsers[data.to]
-
-      if (targetSocket) {
-        targetSocket.send(JSON.stringify({
+      const target = onlineUsers[data.to]
+      if (target) {
+        target.send(JSON.stringify({
           type: "privateMessage",
           sender: data.sender,
           text: data.text
@@ -187,5 +180,5 @@ wss.on("connection", ws => {
 })
 
 server.listen(PORT, () => {
-  console.log("Messenger fixed and running")
+  console.log("Messenger running")
 })
