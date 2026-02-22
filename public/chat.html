@@ -1,18 +1,29 @@
 <!DOCTYPE html>
 <html>
 <head>
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="style.css">
-<title>Messenger Chat</title>
+<title>Messenger 2.0</title>
 </head>
 <body>
 
-<div class="chat">
-<div id="messages"></div>
-<div class="inputArea">
-<input id="text">
-<button onclick="send()">Send</button>
-</div>
+<div class="container">
+
+  <div class="sidebar">
+    <h3>Your Chats</h3>
+    <ul id="chatList"></ul>
+    <button onclick="createGroup()">+ Group</button>
+    <button onclick="createChannel()">+ Channel</button>
+  </div>
+
+  <div class="chatArea">
+    <div id="messages"></div>
+    <div class="inputArea">
+      <input id="text">
+      <button onclick="send()">Send</button>
+    </div>
+  </div>
+
 </div>
 
 <script src="app.js"></script>
