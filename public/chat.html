@@ -3,17 +3,17 @@
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="style.css">
-<title>Messenger 2.0</title>
+<title>Chat</title>
 </head>
 <body>
 
 <div class="container">
 
   <div class="sidebar">
-    <h3>Your Chats</h3>
-    <ul id="chatList"></ul>
-    <button onclick="createGroup()">+ Group</button>
-    <button onclick="createChannel()">+ Channel</button>
+    <h3>Friends</h3>
+    <input id="addFriendInput" placeholder="Add friend">
+    <button onclick="addFriend()">Add</button>
+    <ul id="friendsList"></ul>
   </div>
 
   <div class="chatArea">
