@@ -2,6 +2,8 @@ const express = require("express")
 const http = require("http")
 const WebSocket = require("ws")
 const Database = require("better-sqlite3")
+const bcrypt = require("bcryptjs")
+const jwt = require("jsonwebtoken")
 const path = require("path")
 
 const app = express()
@@ -12,6 +14,8 @@ const server = http.createServer(app)
 const wss = new WebSocket.Server({ server })
 
 const PORT = process.env.PORT || 3000
+const SECRET = "mySuperSecretKey"
+
 const db = new Database("messenger.db")
 
 // ---------------- DATABASE ----------------
@@ -19,115 +23,86 @@ const db = new Database("messenger.db")
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  username TEXT UNIQUE
-);
-
-CREATE TABLE IF NOT EXISTS chats (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT,
-  type TEXT  -- private | group | channel
-);
-
-CREATE TABLE IF NOT EXISTS chat_members (
-  chatId INTEGER,
-  username TEXT
-);
-
-CREATE TABLE IF NOT EXISTS messages (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  chatId INTEGER,
-  sender TEXT,
-  text TEXT,
-  createdAt INTEGER
+  username TEXT UNIQUE,
+  password TEXT
 );
 `)
 
-// ---------------- ONLINE USERS ----------------
+// ---------------- REGISTER ----------------
 
-let onlineUsers = {}
+app.post("/register", async (req, res) => {
+  const { username, password } = req.body
 
-// ---------------- REST API ----------------
+  const hash = await bcrypt.hash(password, 10)
 
-// создать пользователя
-app.post("/register", (req, res) => {
-  const { username } = req.body
   try {
-    db.prepare("INSERT INTO users (username) VALUES (?)").run(username)
+    db.prepare("INSERT INTO users (username,password) VALUES (?,?)")
+      .run(username, hash)
     res.json({ ok: true })
   } catch {
-    res.status(400).json({ error: "User exists" })
+    res.status(400).json({ error: "User already exists" })
   }
 })
 
-// создать чат
-app.post("/create-chat", (req, res) => {
-  const { name, type, members } = req.body
+// ---------------- LOGIN ----------------
 
-  const result = db.prepare(
-    "INSERT INTO chats (name,type) VALUES (?,?)"
-  ).run(name, type)
+app.post("/login", async (req, res) => {
+  const { username, password } = req.body
 
-  const chatId = result.lastInsertRowid
+  const user = db.prepare("SELECT * FROM users WHERE username=?")
+    .get(username)
 
-  members.forEach(member => {
-    db.prepare(
-      "INSERT INTO chat_members (chatId,username) VALUES (?,?)"
-    ).run(chatId, member)
-  })
+  if (!user)
+    return res.status(400).json({ error: "User not found" })
 
-  res.json({ chatId })
+  const valid = await bcrypt.compare(password, user.password)
+
+  if (!valid)
+    return res.status(400).json({ error: "Wrong password" })
+
+  const token = jwt.sign({ username }, SECRET)
+
+  res.json({ token })
 })
 
-// получить чаты пользователя
-app.get("/user-chats/:username", (req, res) => {
-  const username = req.params.username
+// ---------------- VERIFY ----------------
 
-  const chats = db.prepare(`
-    SELECT chats.*
-    FROM chats
-    JOIN chat_members ON chats.id = chat_members.chatId
-    WHERE chat_members.username = ?
-  `).all(username)
+app.get("/verify", (req, res) => {
+  const auth = req.headers.authorization
+  if (!auth) return res.status(401).json({ error: "No token" })
 
-  res.json(chats)
+  try {
+    const decoded = jwt.verify(auth.split(" ")[1], SECRET)
+    res.json({ user: decoded.username })
+  } catch {
+    res.status(401).json({ error: "Invalid token" })
+  }
 })
 
 // ---------------- WEBSOCKET ----------------
+
+let onlineUsers = {}
 
 wss.on("connection", ws => {
 
   ws.on("message", msg => {
     const data = JSON.parse(msg)
 
-    // подключение
     if (data.type === "join") {
       onlineUsers[data.username] = ws
       return
     }
 
-    // отправка сообщения
-    if (data.type === "sendMessage") {
+    if (data.type === "privateMessage") {
+      const target = onlineUsers[data.to]
 
-      db.prepare(`
-        INSERT INTO messages (chatId,sender,text,createdAt)
-        VALUES (?,?,?,?)
-      `).run(data.chatId, data.sender, data.text, Date.now())
-
-      const members = db.prepare(
-        "SELECT username FROM chat_members WHERE chatId=?"
-      ).all(data.chatId)
-
-      members.forEach(member => {
-        const userSocket = onlineUsers[member.username]
-        if (userSocket) {
-          userSocket.send(JSON.stringify({
-            type: "newMessage",
-            chatId: data.chatId,
-            sender: data.sender,
-            text: data.text
-          }))
-        }
-      })
+      if (target) {
+        target.send(JSON.stringify({
+          type: "privateMessage",
+          sender: data.sender,
+          text: data.text
+        }))
+      }
     }
   })
 
