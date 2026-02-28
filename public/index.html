@@ -1,20 +1,46 @@
 <!DOCTYPE html>
-<html>
+<html lang="ru">
 <head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="style.css">
-<title>Login</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="style.css">
+  <title>OneMessenger | Вход</title>
 </head>
-<body>
+<body class="authBody">
+  <div class="authPage">
+    <div class="authHero">
+      <div class="heroBadge">PRIVATE • FAST • NO SIM</div>
+      <h1>OneMessenger</h1>
+      <p>
+        Мессенджер нового поколения: без номера телефона,
+        с юзернеймами, красивым интерфейсом и живым realtime-чатом.
+      </p>
+    </div>
 
-<div class="authBox">
-  <h2>Messenger</h2>
-  <input id="username" placeholder="Username">
-  <input id="password" type="password" placeholder="Password">
-  <button onclick="login()">Login</button>
-  <button onclick="register()">Register</button>
-</div>
+    <div class="authPanels">
+      <div class="authCard glass">
+        <h2>Вход</h2>
+        <p class="muted">Войди по юзернейму или имени аккаунта</p>
 
-<script src="app.js"></script>
+        <input id="loginIdentifier" placeholder="Юзернейм или имя">
+        <input id="loginPassword" type="password" placeholder="Пароль">
+        <button id="loginBtn" class="primaryBtn fullBtn">Войти</button>
+      </div>
+
+      <div class="authCard glass">
+        <h2>Регистрация</h2>
+        <p class="muted">Создай аккаунт без SIM-карты</p>
+
+        <input id="registerName" placeholder="Ваше имя">
+        <input id="registerHandle" placeholder="Создай юзернейм">
+        <input id="registerPassword" type="password" placeholder="Пароль">
+        <button id="registerBtn" class="secondaryBtn fullBtn">Создать аккаунт</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="app.js"></script>
 </body>
 </html>
