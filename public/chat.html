@@ -1,31 +1,95 @@
 <!DOCTYPE html>
-<html>
+<html lang="ru">
 <head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="style.css">
-<title>Chat</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="style.css">
+  <title>OneMessenger</title>
 </head>
-<body>
+<body class="chatBody">
+  <div class="appShell">
+    <aside class="sidebar">
+      <div class="brandBlock">
+        <div class="brandLogo">O</div>
+        <div>
+          <h1>OneMessenger</h1>
+          <p>Без номера телефона</p>
+        </div>
+      </div>
 
-<div class="container">
+      <div class="selfCard">
+        <div>
+          <div class="selfMiniTitle">Ваш профиль</div>
+          <div id="selfMiniName" class="selfMiniName">Пользователь</div>
+          <div id="selfBadge" class="selfBadge">@username</div>
+        </div>
+        <button id="profileBtn" class="ghostBtn">Профиль</button>
+      </div>
 
-  <div class="sidebar">
-    <h3>Friends</h3>
-    <input id="friendInput" placeholder="Add friend">
-    <button onclick="addFriend()">Add</button>
-    <ul id="friendsList"></ul>
+      <div class="searchBlock">
+        <label class="sectionTitle">Поиск по юзернейму</label>
+        <div class="searchRow">
+          <input id="userSearchInput" placeholder="@username">
+          <button id="searchUserBtn" class="primaryBtn">Найти</button>
+        </div>
+        <div id="searchResults" class="searchResults"></div>
+      </div>
+
+      <div class="friendsBlock">
+        <div class="sectionHeader">
+          <span class="sectionTitle">Чаты</span>
+          <button id="logoutBtn" class="dangerGhostBtn">Выйти</button>
+        </div>
+        <div id="friendsList" class="friendsList"></div>
+      </div>
+    </aside>
+
+    <main class="chatArea">
+      <div class="chatTopbar">
+        <div>
+          <div id="chatTitle" class="chatTitle">Выберите чат</div>
+          <div id="chatSubtitle" class="chatSubtitle">Откройте друга слева</div>
+        </div>
+      </div>
+
+      <div id="messages" class="messages">
+        <div class="emptyCenter">
+          Здесь появятся сообщения ✨
+        </div>
+      </div>
+
+      <div class="composer">
+        <input id="text" placeholder="Напишите сообщение...">
+        <button id="recordBtn" class="secondaryBtn">🎙 Записать</button>
+        <button id="sendBtn" class="primaryBtn">Отправить</button>
+      </div>
+    </main>
   </div>
 
-  <div class="chatArea">
-    <div id="messages"></div>
-    <div class="inputArea">
-      <input id="text">
-      <button onclick="send()">Send</button>
+  <div id="profileModal" class="modal">
+    <div class="modalCard">
+      <div class="modalHeader">
+        <h3>Редактирование профиля</h3>
+        <button id="closeProfileBtn" class="ghostBtn">✕</button>
+      </div>
+
+      <div class="modalBody">
+        <label>Имя</label>
+        <input id="profileName" placeholder="Ваше имя">
+
+        <label>Юзернейм</label>
+        <input id="profileHandle" disabled>
+
+        <label>Описание</label>
+        <textarea id="profileBio" rows="4" placeholder="Немного о себе"></textarea>
+
+        <button id="saveProfileBtn" class="primaryBtn fullBtn">Сохранить</button>
+      </div>
     </div>
   </div>
 
-</div>
+  <div id="toast" class="toast"></div>
 
-<script src="app.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>
