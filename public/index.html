@@ -1,42 +1,79 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="stylesheet" href="style.css">
-  <title>OneMessenger | Вход</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OneMessenger</title>
+  <link rel="stylesheet" href="style.css" />
 </head>
-<body class="authBody">
-  <div class="authPage">
-    <div class="authHero">
-      <div class="heroBadge">PRIVATE • FAST • NO SIM</div>
-      <h1>OneMessenger</h1>
+<body class="theme-auto">
+  <div class="auth-layout">
+    <section class="auth-hero">
+      <div class="hero-badge">OneMessenger</div>
+      <h1>Мессенджер без номера телефона</h1>
       <p>
-        Мессенджер нового поколения: без номера телефона,
-        с юзернеймами, красивым интерфейсом и живым realtime-чатом.
+        Современный чат с юзернеймами, тёмной и светлой темой,
+        адаптацией под телефон, планшет и компьютер.
       </p>
-    </div>
 
-    <div class="authPanels">
-      <div class="authCard glass">
-        <h2>Вход</h2>
-        <p class="muted">Войди по юзернейму или имени аккаунта</p>
-
-        <input id="loginIdentifier" placeholder="Юзернейм или имя">
-        <input id="loginPassword" type="password" placeholder="Пароль">
-        <button id="loginBtn" class="primaryBtn fullBtn">Войти</button>
+      <div class="hero-points">
+        <div class="point-card">💬 Личные чаты</div>
+        <div class="point-card">👥 Группы</div>
+        <div class="point-card">🔐 Код из 6 цифр</div>
+        <div class="point-card">🌙 Светлая/тёмная тема</div>
       </div>
+    </section>
 
-      <div class="authCard glass">
-        <h2>Регистрация</h2>
-        <p class="muted">Создай аккаунт без SIM-карты</p>
+    <section class="auth-panel">
+      <div class="auth-card">
+        <div class="tabs">
+          <button class="tab active" id="showLoginBtn" onclick="showAuthTab('login')">Вход</button>
+          <button class="tab" id="showRegisterBtn" onclick="showAuthTab('register')">Регистрация</button>
+        </div>
 
-        <input id="registerName" placeholder="Ваше имя">
-        <input id="registerHandle" placeholder="Создай юзернейм">
-        <input id="registerPassword" type="password" placeholder="Пароль">
-        <button id="registerBtn" class="secondaryBtn fullBtn">Создать аккаунт</button>
+        <div id="loginBox" class="auth-box active">
+          <h2>Войти</h2>
+          <p class="auth-subtext">
+            Нет аккаунта?
+            <button class="text-link" onclick="showAuthTab('register')">Создать аккаунт</button>
+          </p>
+
+          <input id="loginIdentifier" placeholder="Юзернейм или имя" />
+          <input id="loginPassword" type="password" placeholder="Пароль" />
+          <button class="primary-btn full" id="loginBtn">Войти</button>
+        </div>
+
+        <div id="registerBox" class="auth-box">
+          <h2>Создать аккаунт</h2>
+          <p class="auth-subtext">
+            Уже есть аккаунт?
+            <button class="text-link" onclick="showAuthTab('login')">Войти</button>
+          </p>
+
+          <input id="registerName" placeholder="Ваше имя" />
+          <input id="registerHandle" placeholder="Придумайте юзернейм" />
+          <input id="registerPassword" type="password" placeholder="Пароль" />
+          <button class="primary-btn full" id="registerBtn">Создать аккаунт</button>
+        </div>
+
+        <div id="otpBox" class="auth-box">
+          <h2>Подтверждение входа</h2>
+          <p class="auth-subtext">Введите 6-значный код</p>
+
+          <div class="otp-grid">
+            <input maxlength="1" class="otp-input" />
+            <input maxlength="1" class="otp-input" />
+            <input maxlength="1" class="otp-input" />
+            <input maxlength="1" class="otp-input" />
+            <input maxlength="1" class="otp-input" />
+            <input maxlength="1" class="otp-input" />
+          </div>
+
+          <button class="primary-btn full" onclick="submitOtp()">Подтвердить</button>
+          <button class="ghost-btn full" onclick="showAuthTab('login')">Назад</button>
+        </div>
       </div>
-    </div>
+    </section>
   </div>
 
   <div id="toast" class="toast"></div>
