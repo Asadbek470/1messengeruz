@@ -1,89 +1,111 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="stylesheet" href="style.css">
-  <title>OneMessenger</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OneMessenger Chat</title>
+  <link rel="stylesheet" href="style.css" />
 </head>
-<body class="chatBody">
-  <div class="appShell">
-    <aside class="sidebar">
-      <div class="brandBlock">
-        <div class="brandLogo">O</div>
+<body class="theme-auto chat-page">
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-top">
+        <div class="brand">
+          <div class="brand-logo">O</div>
+          <div>
+            <div class="brand-title">OneMessenger</div>
+            <div class="brand-subtitle">без SIM</div>
+          </div>
+        </div>
+
+        <button class="ghost-icon-btn mobile-only" onclick="toggleSidebar()">✕</button>
+      </div>
+
+      <div class="profile-mini-card">
         <div>
-          <h1>OneMessenger</h1>
-          <p>Без номера телефона</p>
+          <div id="selfMiniName" class="profile-mini-name">Пользователь</div>
+          <div id="selfBadge" class="profile-mini-handle">@username</div>
+          <div class="status-row">
+            <span class="status-dot online"></span>
+            <span>Online</span>
+          </div>
         </div>
+        <button class="ghost-btn small" id="profileBtn">Профиль</button>
       </div>
 
-      <div class="selfCard">
-        <div>
-          <div class="selfMiniTitle">Ваш профиль</div>
-          <div id="selfMiniName" class="selfMiniName">Пользователь</div>
-          <div id="selfBadge" class="selfBadge">@username</div>
+      <div class="search-block">
+        <label class="section-label">Поиск по юзернейму</label>
+        <div class="search-row">
+          <input id="userSearchInput" placeholder="@username" />
+          <button id="searchUserBtn" class="primary-btn small">Найти</button>
         </div>
-        <button id="profileBtn" class="ghostBtn">Профиль</button>
+        <div id="searchResults" class="search-results"></div>
       </div>
 
-      <div class="searchBlock">
-        <label class="sectionTitle">Поиск по юзернейму</label>
-        <div class="searchRow">
-          <input id="userSearchInput" placeholder="@username">
-          <button id="searchUserBtn" class="primaryBtn">Найти</button>
-        </div>
-        <div id="searchResults" class="searchResults"></div>
+      <div class="sidebar-actions">
+        <button class="ghost-btn full">Создать группу</button>
+        <button class="ghost-btn full">Поддержка</button>
+        <button class="danger-btn full" id="logoutBtn">Выйти</button>
       </div>
 
-      <div class="friendsBlock">
-        <div class="sectionHeader">
-          <span class="sectionTitle">Чаты</span>
-          <button id="logoutBtn" class="dangerGhostBtn">Выйти</button>
+      <div class="chat-list-wrap">
+        <div class="section-header">
+          <span class="section-label">Чаты</span>
+          <span class="chip">online/offline</span>
         </div>
-        <div id="friendsList" class="friendsList"></div>
+        <div id="friendsList" class="chat-list"></div>
       </div>
     </aside>
 
-    <main class="chatArea">
-      <div class="chatTopbar">
-        <div>
-          <div id="chatTitle" class="chatTitle">Выберите чат</div>
-          <div id="chatSubtitle" class="chatSubtitle">Откройте друга слева</div>
+    <main class="chat-main">
+      <header class="chat-header">
+        <div class="chat-header-left">
+          <button class="ghost-icon-btn mobile-only" onclick="toggleSidebar()">☰</button>
+          <div>
+            <div id="chatTitle" class="chat-title">Выберите чат</div>
+            <div id="chatSubtitle" class="chat-subtitle">Сообщения будут по порядку</div>
+          </div>
         </div>
-      </div>
 
-      <div id="messages" class="messages">
-        <div class="emptyCenter">
-          Здесь появятся сообщения ✨
+        <div class="chat-header-right">
+          <button class="ghost-btn small" onclick="toggleTheme()">Тема</button>
+          <button class="ghost-btn small">Группа</button>
         </div>
-      </div>
+      </header>
 
-      <div class="composer">
-        <input id="text" placeholder="Напишите сообщение...">
-        <button id="recordBtn" class="secondaryBtn">🎙 Записать</button>
-        <button id="sendBtn" class="primaryBtn">Отправить</button>
-      </div>
+      <section id="messages" class="messages-area">
+        <div class="empty-chat">
+          Выберите пользователя или группу ✨
+        </div>
+      </section>
+
+      <footer class="composer">
+        <button class="ghost-icon-btn">😊</button>
+        <input id="text" placeholder="Напишите сообщение..." />
+        <button id="recordBtn" class="ghost-btn small">🎙</button>
+        <button id="sendBtn" class="primary-btn">Отправить</button>
+      </footer>
     </main>
   </div>
 
   <div id="profileModal" class="modal">
-    <div class="modalCard">
-      <div class="modalHeader">
+    <div class="modal-card">
+      <div class="modal-head">
         <h3>Редактирование профиля</h3>
-        <button id="closeProfileBtn" class="ghostBtn">✕</button>
+        <button class="ghost-icon-btn" id="closeProfileBtn">✕</button>
       </div>
 
-      <div class="modalBody">
+      <div class="modal-body">
         <label>Имя</label>
-        <input id="profileName" placeholder="Ваше имя">
+        <input id="profileName" placeholder="Ваше имя" />
 
         <label>Юзернейм</label>
-        <input id="profileHandle" disabled>
+        <input id="profileHandle" disabled />
 
         <label>Описание</label>
-        <textarea id="profileBio" rows="4" placeholder="Немного о себе"></textarea>
+        <textarea id="profileBio" rows="4" placeholder="О себе"></textarea>
 
-        <button id="saveProfileBtn" class="primaryBtn fullBtn">Сохранить</button>
+        <button class="primary-btn full" id="saveProfileBtn">Сохранить</button>
       </div>
     </div>
   </div>
