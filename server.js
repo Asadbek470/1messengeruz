@@ -50,18 +50,24 @@ CREATE TABLE IF NOT EXISTS messages (
 function safeAlter(sql) {
   try {
     db.exec(sql);
-  } catch {}
+  } catch (err) {
+    console.log("Migration skipped:", err.message);
+  }
 }
 
 safeAlter(`ALTER TABLE users ADD COLUMN displayName TEXT`);
-safeAlter(`ALTER TABLE users ADD COLUMN handle TEXT UNIQUE`);
+safeAlter(`ALTER TABLE users ADD COLUMN handle TEXT`);
 safeAlter(`ALTER TABLE users ADD COLUMN bio TEXT DEFAULT ''`);
 safeAlter(`ALTER TABLE users ADD COLUMN avatarColor TEXT DEFAULT '#5b7cff'`);
 
 safeAlter(`ALTER TABLE messages ADD COLUMN type TEXT DEFAULT 'text'`);
 safeAlter(`ALTER TABLE messages ADD COLUMN audioPath TEXT`);
 
-safeAlter(`CREATE UNIQUE INDEX IF NOT EXISTS idx_friend_pair ON friends(user1, user2)`);
+safeAlter(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_handle_unique ON users(handle)`);
+
+// Не делаем unique для friends, если в старой БД есть дубликаты.
+// Иначе SQLite может снова рухнуть при запуске.
+// safeAlter(`CREATE UNIQUE INDEX IF NOT EXISTS idx_friend_pair ON friends(user1, user2)`);
 
 db.prepare(`
   UPDATE users
@@ -73,8 +79,13 @@ const usersWithoutHandle = db.prepare(`
 `).all();
 
 for (const user of usersWithoutHandle) {
+  const fallbackHandle = String(user.username || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, "_");
+
   db.prepare(`UPDATE users SET handle = ? WHERE id = ?`).run(
-    String(user.username || "").toLowerCase(),
+    fallbackHandle || `user_${user.id}`,
     user.id
   );
 }
@@ -125,7 +136,7 @@ function verify(req, res, next) {
 
 function getUserByHandle(handle) {
   return db.prepare(`
-    SELECT id, username, displayName, handle, bio, avatarColor
+    SELECT id, username, displayName, handle, bio, avatarColor, password
     FROM users
     WHERE handle = ?
   `).get(normalizeHandle(handle));
@@ -145,7 +156,7 @@ function getUserByIdentifier(identifier) {
 
 function areFriends(handle1, handle2) {
   const row = db.prepare(`
-    SELECT 1 FROM friends WHERE user1 = ? AND user2 = ?
+    SELECT 1 FROM friends WHERE user1 = ? AND user2 = ? LIMIT 1
   `).get(handle1, handle2);
 
   return !!row;
@@ -164,7 +175,7 @@ app.post("/register", async (req, res) => {
 
   if (!/^[a-z0-9_]{4,20}$/.test(handle)) {
     return res.status(400).json({
-      error: "Юзернейм должен быть от 4 до 20 символов: буквы, цифры, _"
+      error: "Юзернейм: 4-20 символов, только буквы, цифры и _"
     });
   }
 
@@ -189,10 +200,11 @@ app.post("/register", async (req, res) => {
 
     res.json({
       ok: true,
-      message: "Аккаунт успешно создан",
+      message: "Аккаунт создан",
       token: makeToken(user)
     });
   } catch (err) {
+    console.error("Register error:", err.message);
     res.status(400).json({ error: "Ошибка регистрации" });
   }
 });
@@ -276,7 +288,6 @@ app.post("/add-friend", verify, (req, res) => {
   }
 
   const exists = getUserByHandle(handle);
-
   if (!exists) {
     return res.status(404).json({ error: "Пользователь не найден" });
   }
@@ -285,13 +296,13 @@ app.post("/add-friend", verify, (req, res) => {
     return res.status(400).json({ error: "Уже в друзьях" });
   }
 
-  db.prepare(`INSERT OR IGNORE INTO friends (user1, user2) VALUES (?, ?)`)
+  db.prepare(`INSERT INTO friends (user1, user2) VALUES (?, ?)`)
     .run(req.user.handle, handle);
 
-  db.prepare(`INSERT OR IGNORE INTO friends (user1, user2) VALUES (?, ?)`)
+  db.prepare(`INSERT INTO friends (user1, user2) VALUES (?, ?)`)
     .run(handle, req.user.handle);
 
-  res.json({ ok: true, message: "Друг успешно добавлен" });
+  res.json({ ok: true, message: "Друг добавлен" });
 });
 
 app.get("/friends", verify, (req, res) => {
@@ -357,6 +368,7 @@ app.post("/upload-voice", verify, (req, res) => {
 
   const mimeType = match[1];
   const base64Data = match[2];
+
   const ext = mimeType.includes("webm")
     ? "webm"
     : mimeType.includes("ogg")
@@ -411,6 +423,8 @@ wss.on("connection", (ws) => {
         if (!senderUser || !targetUser) return;
         if (!areFriends(senderHandle, to)) return;
 
+        const createdAt = Date.now();
+
         db.prepare(`
           INSERT INTO messages (user1, user2, sender, text, type, audioPath, createdAt)
           VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -421,7 +435,7 @@ wss.on("connection", (ws) => {
           text,
           messageType,
           audioPath,
-          Date.now()
+          createdAt
         );
 
         const payload = {
@@ -431,7 +445,7 @@ wss.on("connection", (ws) => {
           messageType,
           text,
           audioPath,
-          createdAt: Date.now()
+          createdAt
         };
 
         const targetSocket = onlineUsers.get(to);
@@ -439,7 +453,9 @@ wss.on("connection", (ws) => {
           targetSocket.send(JSON.stringify(payload));
         }
       }
-    } catch {}
+    } catch (err) {
+      console.error("WebSocket error:", err.message);
+    }
   });
 
   ws.on("close", () => {
