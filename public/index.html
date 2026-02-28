@@ -6,72 +6,46 @@
   <title>OneMessenger</title>
   <link rel="stylesheet" href="style.css" />
 </head>
-<body class="theme-auto">
+<body class="auth-page">
   <div class="auth-layout">
     <section class="auth-hero">
       <div class="hero-badge">OneMessenger</div>
       <h1>Мессенджер без номера телефона</h1>
       <p>
-        Современный чат с юзернеймами, тёмной и светлой темой,
-        адаптацией под телефон, планшет и компьютер.
+        Вход по юзернейму, группы, админы, владелец, бан-лист слов,
+        блокировка нарушителей и аккуратный интерфейс для телефона, планшета и компьютера.
       </p>
-
-      <div class="hero-points">
-        <div class="point-card">💬 Личные чаты</div>
-        <div class="point-card">👥 Группы</div>
-        <div class="point-card">🔐 Код из 6 цифр</div>
-        <div class="point-card">🌙 Светлая/тёмная тема</div>
-      </div>
     </section>
 
-    <section class="auth-panel">
-      <div class="auth-card">
-        <div class="tabs">
-          <button class="tab active" id="showLoginBtn" onclick="showAuthTab('login')">Вход</button>
-          <button class="tab" id="showRegisterBtn" onclick="showAuthTab('register')">Регистрация</button>
-        </div>
+    <section class="auth-card">
+      <div class="auth-tabs">
+        <button id="tabLogin" class="tab active" type="button">Вход</button>
+        <button id="tabRegister" class="tab" type="button">Регистрация</button>
+      </div>
 
-        <div id="loginBox" class="auth-box active">
-          <h2>Войти</h2>
-          <p class="auth-subtext">
-            Нет аккаунта?
-            <button class="text-link" onclick="showAuthTab('register')">Создать аккаунт</button>
-          </p>
+      <div id="loginView" class="auth-view active">
+        <h2>Войти</h2>
+        <p class="muted">
+          Нет аккаунта?
+          <button id="goRegister" class="link-btn" type="button">Создать аккаунт</button>
+        </p>
 
-          <input id="loginIdentifier" placeholder="Юзернейм или имя" />
-          <input id="loginPassword" type="password" placeholder="Пароль" />
-          <button class="primary-btn full" id="loginBtn">Войти</button>
-        </div>
+        <input id="loginIdentifier" placeholder="Юзернейм или имя" />
+        <input id="loginPassword" type="password" placeholder="Пароль" />
+        <button id="loginBtn" class="primary-btn full" type="button">Войти</button>
+      </div>
 
-        <div id="registerBox" class="auth-box">
-          <h2>Создать аккаунт</h2>
-          <p class="auth-subtext">
-            Уже есть аккаунт?
-            <button class="text-link" onclick="showAuthTab('login')">Войти</button>
-          </p>
+      <div id="registerView" class="auth-view">
+        <h2>Создать аккаунт</h2>
+        <p class="muted">
+          Уже есть аккаунт?
+          <button id="goLogin" class="link-btn" type="button">Войти</button>
+        </p>
 
-          <input id="registerName" placeholder="Ваше имя" />
-          <input id="registerHandle" placeholder="Придумайте юзернейм" />
-          <input id="registerPassword" type="password" placeholder="Пароль" />
-          <button class="primary-btn full" id="registerBtn">Создать аккаунт</button>
-        </div>
-
-        <div id="otpBox" class="auth-box">
-          <h2>Подтверждение входа</h2>
-          <p class="auth-subtext">Введите 6-значный код</p>
-
-          <div class="otp-grid">
-            <input maxlength="1" class="otp-input" />
-            <input maxlength="1" class="otp-input" />
-            <input maxlength="1" class="otp-input" />
-            <input maxlength="1" class="otp-input" />
-            <input maxlength="1" class="otp-input" />
-            <input maxlength="1" class="otp-input" />
-          </div>
-
-          <button class="primary-btn full" onclick="submitOtp()">Подтвердить</button>
-          <button class="ghost-btn full" onclick="showAuthTab('login')">Назад</button>
-        </div>
+        <input id="registerName" placeholder="Ваше имя" />
+        <input id="registerHandle" placeholder="Юзернейм, например asadbek_01" />
+        <input id="registerPassword" type="password" placeholder="Пароль" />
+        <button id="registerBtn" class="primary-btn full" type="button">Создать аккаунт</button>
       </div>
     </section>
   </div>
