@@ -5,17 +5,10 @@ const Database = require("better-sqlite3");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const path = require("path");
-const fs = require("fs");
 
 const app = express();
-app.use(express.json({ limit: "25mb" }));
+app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
-
-const uploadsDir = path.join(__dirname, "uploads");
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir);
-}
-app.use("/uploads", express.static(uploadsDir));
 
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
@@ -45,6 +38,21 @@ CREATE TABLE IF NOT EXISTS messages (
   text TEXT,
   createdAt INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS groups_table (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  description TEXT DEFAULT '',
+  ownerHandle TEXT NOT NULL,
+  createdAt INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS group_members (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  groupId INTEGER NOT NULL,
+  userHandle TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'member'
+);
 `);
 
 function safeAlter(sql) {
@@ -58,16 +66,13 @@ function safeAlter(sql) {
 safeAlter(`ALTER TABLE users ADD COLUMN displayName TEXT`);
 safeAlter(`ALTER TABLE users ADD COLUMN handle TEXT`);
 safeAlter(`ALTER TABLE users ADD COLUMN bio TEXT DEFAULT ''`);
-safeAlter(`ALTER TABLE users ADD COLUMN avatarColor TEXT DEFAULT '#5b7cff'`);
+safeAlter(`ALTER TABLE users ADD COLUMN blockedUntil INTEGER DEFAULT 0`);
+safeAlter(`ALTER TABLE users ADD COLUMN strikes INTEGER DEFAULT 0`);
 
-safeAlter(`ALTER TABLE messages ADD COLUMN type TEXT DEFAULT 'text'`);
-safeAlter(`ALTER TABLE messages ADD COLUMN audioPath TEXT`);
+safeAlter(`ALTER TABLE messages ADD COLUMN chatType TEXT DEFAULT 'private'`);
+safeAlter(`ALTER TABLE messages ADD COLUMN groupId INTEGER`);
 
 safeAlter(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_handle_unique ON users(handle)`);
-
-// Не делаем unique для friends, если в старой БД есть дубликаты.
-// Иначе SQLite может снова рухнуть при запуске.
-// safeAlter(`CREATE UNIQUE INDEX IF NOT EXISTS idx_friend_pair ON friends(user1, user2)`);
 
 db.prepare(`
   UPDATE users
@@ -82,29 +87,55 @@ for (const user of usersWithoutHandle) {
   const fallbackHandle = String(user.username || "")
     .trim()
     .toLowerCase()
-    .replace(/[^a-z0-9_]/g, "_");
+    .replace(/[^a-z0-9_]/g, "_") || `user_${user.id}`;
 
-  db.prepare(`UPDATE users SET handle = ? WHERE id = ?`).run(
-    fallbackHandle || `user_${user.id}`,
-    user.id
-  );
+  db.prepare(`UPDATE users SET handle = ? WHERE id = ?`).run(fallbackHandle, user.id);
 }
+
+const bannedTerms = [
+  "терракт",
+  "теракт",
+  "террор",
+  "терроризм",
+  "terror",
+  "terrorism",
+  "бомба",
+  "взорву",
+  "убью",
+  "расстрел",
+  "экстремизм",
+  "extremism",
+  "суицид",
+  "самоубийство",
+  "мессенджер тупой",
+  "мессенджер глупый",
+  "мессенджер наглый",
+  "тупой мессенджер",
+  "глупый мессенджер",
+  "наглый мессенджер"
+];
 
 function normalizeHandle(value = "") {
   return String(value).trim().replace(/^@+/, "").toLowerCase();
 }
 
-function randomAvatarColor() {
-  const colors = [
-    "#5b7cff",
-    "#8b5cf6",
-    "#06b6d4",
-    "#10b981",
-    "#f59e0b",
-    "#ef4444",
-    "#ec4899"
-  ];
-  return colors[Math.floor(Math.random() * colors.length)];
+function getUserByHandle(handle) {
+  return db.prepare(`
+    SELECT id, username, password, displayName, handle, bio, blockedUntil, strikes
+    FROM users
+    WHERE handle = ?
+  `).get(normalizeHandle(handle));
+}
+
+function getUserByIdentifier(identifier) {
+  const value = normalizeHandle(identifier);
+  return db.prepare(`
+    SELECT *
+    FROM users
+    WHERE lower(handle) = ?
+       OR lower(username) = ?
+       OR lower(displayName) = ?
+  `).get(value, value, value);
 }
 
 function makeToken(user) {
@@ -119,50 +150,105 @@ function makeToken(user) {
   );
 }
 
+function isBlocked(user) {
+  return Number(user.blockedUntil || 0) > Date.now();
+}
+
+function blockText(user) {
+  const until = Number(user.blockedUntil || 0);
+  const hours = Math.ceil((until - Date.now()) / (1000 * 60 * 60));
+  return `Аккаунт временно заблокирован. Осталось примерно ${hours} ч.`;
+}
+
 function verify(req, res, next) {
   const auth = req.headers.authorization;
-  if (!auth) {
-    return res.status(401).json({ error: "Нет токена" });
-  }
+  if (!auth) return res.status(401).json({ error: "Нет токена" });
 
   try {
     const decoded = jwt.verify(auth.split(" ")[1], SECRET);
-    req.user = decoded;
+    const user = db.prepare(`SELECT * FROM users WHERE id = ?`).get(decoded.id);
+    if (!user) return res.status(401).json({ error: "Пользователь не найден" });
+
+    if (isBlocked(user)) {
+      return res.status(403).json({ error: blockText(user) });
+    }
+
+    req.user = user;
     next();
   } catch {
     res.status(401).json({ error: "Неверный токен" });
   }
 }
 
-function getUserByHandle(handle) {
-  return db.prepare(`
-    SELECT id, username, displayName, handle, bio, avatarColor, password
-    FROM users
+function moderateMessage(userHandle, text) {
+  const lowered = String(text || "").toLowerCase();
+  const found = bannedTerms.find((term) => lowered.includes(term));
+
+  if (!found) {
+    return { ok: true };
+  }
+
+  const user = getUserByHandle(userHandle);
+  const newStrikes = Number(user.strikes || 0) + 1;
+
+  if (newStrikes >= 3) {
+    const blockedUntil = Date.now() + 3 * 24 * 60 * 60 * 1000;
+    db.prepare(`
+      UPDATE users
+      SET strikes = 0, blockedUntil = ?
+      WHERE handle = ?
+    `).run(blockedUntil, userHandle);
+
+    return {
+      ok: false,
+      blocked: true,
+      message: `Вы нарушили правила 3 раза. Аккаунт заблокирован на 3 дня. Причина: "${found}".`
+    };
+  }
+
+  db.prepare(`
+    UPDATE users
+    SET strikes = ?
     WHERE handle = ?
-  `).get(normalizeHandle(handle));
-}
+  `).run(newStrikes, userHandle);
 
-function getUserByIdentifier(identifier) {
-  const value = normalizeHandle(identifier);
-
-  return db.prepare(`
-    SELECT *
-    FROM users
-    WHERE lower(handle) = ?
-       OR lower(username) = ?
-       OR lower(displayName) = ?
-  `).get(value, value, value);
+  return {
+    ok: false,
+    blocked: false,
+    message: `Сообщение отклонено из-за запрещённого слова/фразы: "${found}". Нарушение ${newStrikes}/3.`
+  };
 }
 
 function areFriends(handle1, handle2) {
-  const row = db.prepare(`
+  return !!db.prepare(`
     SELECT 1 FROM friends WHERE user1 = ? AND user2 = ? LIMIT 1
   `).get(handle1, handle2);
-
-  return !!row;
 }
 
-/* ---------- AUTH ---------- */
+function getGroup(groupId) {
+  return db.prepare(`
+    SELECT * FROM groups_table WHERE id = ?
+  `).get(groupId);
+}
+
+function getGroupMember(groupId, handle) {
+  return db.prepare(`
+    SELECT * FROM group_members WHERE groupId = ? AND userHandle = ?
+  `).get(groupId, handle);
+}
+
+function canManageGroup(groupId, handle) {
+  const member = getGroupMember(groupId, handle);
+  return member && (member.role === "owner" || member.role === "admin");
+}
+
+function sendJson(ws, payload) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(payload));
+  }
+}
+
+/* AUTH */
 
 app.post("/register", async (req, res) => {
   const displayName = String(req.body.displayName || "").trim();
@@ -174,39 +260,31 @@ app.post("/register", async (req, res) => {
   }
 
   if (!/^[a-z0-9_]{4,20}$/.test(handle)) {
-    return res.status(400).json({
-      error: "Юзернейм: 4-20 символов, только буквы, цифры и _"
-    });
+    return res.status(400).json({ error: "Юзернейм: 4-20 символов, только буквы, цифры и _" });
   }
 
   if (password.length < 4) {
     return res.status(400).json({ error: "Пароль слишком короткий" });
   }
 
-  const existing = db.prepare(`SELECT id FROM users WHERE handle = ?`).get(handle);
-  if (existing) {
+  const exists = db.prepare(`SELECT id FROM users WHERE handle = ?`).get(handle);
+  if (exists) {
     return res.status(400).json({ error: "Такой юзернейм уже занят" });
   }
 
   const hash = await bcrypt.hash(password, 10);
 
-  try {
-    const result = db.prepare(`
-      INSERT INTO users (username, displayName, handle, password, bio, avatarColor)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(displayName, displayName, handle, hash, "", randomAvatarColor());
+  const result = db.prepare(`
+    INSERT INTO users (username, password, displayName, handle, bio, blockedUntil, strikes)
+    VALUES (?, ?, ?, ?, '', 0, 0)
+  `).run(displayName, hash, displayName, handle);
 
-    const user = db.prepare(`SELECT * FROM users WHERE id = ?`).get(result.lastInsertRowid);
+  const user = db.prepare(`SELECT * FROM users WHERE id = ?`).get(result.lastInsertRowid);
 
-    res.json({
-      ok: true,
-      message: "Аккаунт создан",
-      token: makeToken(user)
-    });
-  } catch (err) {
-    console.error("Register error:", err.message);
-    res.status(400).json({ error: "Ошибка регистрации" });
-  }
+  res.json({
+    ok: true,
+    token: makeToken(user)
+  });
 });
 
 app.post("/login", async (req, res) => {
@@ -214,9 +292,12 @@ app.post("/login", async (req, res) => {
   const password = String(req.body.password || "").trim();
 
   const user = getUserByIdentifier(identifier);
-
   if (!user) {
     return res.status(400).json({ error: "Пользователь не найден" });
+  }
+
+  if (isBlocked(user)) {
+    return res.status(403).json({ error: blockText(user) });
   }
 
   const valid = await bcrypt.compare(password, user.password);
@@ -227,43 +308,69 @@ app.post("/login", async (req, res) => {
   res.json({ token: makeToken(user) });
 });
 
-/* ---------- PROFILE ---------- */
+/* PROFILE */
 
 app.get("/me", verify, (req, res) => {
-  const me = db.prepare(`
-    SELECT id, displayName, handle, bio, avatarColor
-    FROM users
-    WHERE id = ?
-  `).get(req.user.id);
-
-  res.json(me);
+  res.json({
+    id: req.user.id,
+    displayName: req.user.displayName,
+    handle: req.user.handle,
+    bio: req.user.bio || ""
+  });
 });
 
 app.put("/me", verify, (req, res) => {
   const displayName = String(req.body.displayName || "").trim();
-  const bio = String(req.body.bio || "").trim().slice(0, 180);
+  const handle = normalizeHandle(req.body.handle);
+  const bio = String(req.body.bio || "").trim().slice(0, 300);
 
-  if (!displayName) {
-    return res.status(400).json({ error: "Имя не должно быть пустым" });
+  if (!displayName || !handle) {
+    return res.status(400).json({ error: "Имя и юзернейм обязательны" });
+  }
+
+  if (!/^[a-z0-9_]{4,20}$/.test(handle)) {
+    return res.status(400).json({ error: "Некорректный юзернейм" });
+  }
+
+  const existing = db.prepare(`
+    SELECT id FROM users WHERE handle = ? AND id != ?
+  `).get(handle, req.user.id);
+
+  if (existing) {
+    return res.status(400).json({ error: "Этот юзернейм уже занят" });
   }
 
   db.prepare(`
     UPDATE users
-    SET displayName = ?, bio = ?
+    SET displayName = ?, handle = ?, bio = ?
     WHERE id = ?
-  `).run(displayName, bio, req.user.id);
+  `).run(displayName, handle, bio, req.user.id);
 
-  res.json({ ok: true, message: "Профиль обновлён" });
+  db.prepare(`UPDATE friends SET user1 = ? WHERE user1 = ?`).run(handle, req.user.handle);
+  db.prepare(`UPDATE friends SET user2 = ? WHERE user2 = ?`).run(handle, req.user.handle);
+  db.prepare(`UPDATE messages SET user1 = ? WHERE user1 = ?`).run(handle, req.user.handle);
+  db.prepare(`UPDATE messages SET user2 = ? WHERE user2 = ?`).run(handle, req.user.handle);
+  db.prepare(`UPDATE messages SET sender = ? WHERE sender = ?`).run(handle, req.user.handle);
+  db.prepare(`UPDATE groups_table SET ownerHandle = ? WHERE ownerHandle = ?`).run(handle, req.user.handle);
+  db.prepare(`UPDATE group_members SET userHandle = ? WHERE userHandle = ?`).run(handle, req.user.handle);
+
+  const updated = db.prepare(`SELECT * FROM users WHERE id = ?`).get(req.user.id);
+
+  res.json({
+    ok: true,
+    message: "Профиль обновлён",
+    token: makeToken(updated)
+  });
 });
 
-/* ---------- SEARCH USERS ---------- */
+/* USERS / FRIENDS */
 
 app.get("/users/search", verify, (req, res) => {
   const q = normalizeHandle(req.query.q || "");
   if (!q) return res.json([]);
 
   const users = db.prepare(`
-    SELECT displayName, handle, bio, avatarColor
+    SELECT displayName, handle, bio
     FROM users
     WHERE handle LIKE ?
       AND handle != ?
@@ -274,45 +381,28 @@ app.get("/users/search", verify, (req, res) => {
   res.json(users);
 });
 
-/* ---------- FRIENDS ---------- */
-
 app.post("/add-friend", verify, (req, res) => {
   const handle = normalizeHandle(req.body.handle);
 
-  if (!handle) {
-    return res.status(400).json({ error: "Юзернейм обязателен" });
-  }
+  if (!handle) return res.status(400).json({ error: "Юзернейм обязателен" });
+  if (handle === req.user.handle) return res.status(400).json({ error: "Нельзя добавить самого себя" });
 
-  if (handle === req.user.handle) {
-    return res.status(400).json({ error: "Нельзя добавить самого себя" });
-  }
-
-  const exists = getUserByHandle(handle);
-  if (!exists) {
-    return res.status(404).json({ error: "Пользователь не найден" });
-  }
+  const friend = getUserByHandle(handle);
+  if (!friend) return res.status(404).json({ error: "Пользователь не найден" });
 
   if (areFriends(req.user.handle, handle)) {
     return res.status(400).json({ error: "Уже в друзьях" });
   }
 
-  db.prepare(`INSERT INTO friends (user1, user2) VALUES (?, ?)`)
-    .run(req.user.handle, handle);
-
-  db.prepare(`INSERT INTO friends (user1, user2) VALUES (?, ?)`)
-    .run(handle, req.user.handle);
+  db.prepare(`INSERT INTO friends (user1, user2) VALUES (?, ?)`).run(req.user.handle, handle);
+  db.prepare(`INSERT INTO friends (user1, user2) VALUES (?, ?)`).run(handle, req.user.handle);
 
   res.json({ ok: true, message: "Друг добавлен" });
 });
 
 app.get("/friends", verify, (req, res) => {
   const friends = db.prepare(`
-    SELECT
-      f.user2 AS user2Handle,
-      u.displayName,
-      u.handle,
-      u.bio,
-      u.avatarColor
+    SELECT u.displayName, u.handle, u.bio
     FROM friends f
     JOIN users u ON u.handle = f.user2
     WHERE f.user1 = ?
@@ -322,73 +412,222 @@ app.get("/friends", verify, (req, res) => {
   res.json(friends);
 });
 
-/* ---------- MESSAGES ---------- */
+/* PRIVATE MESSAGES */
 
-app.get("/messages/:friend", verify, (req, res) => {
-  const friendHandle = normalizeHandle(req.params.friend);
-
-  if (!friendHandle) {
-    return res.status(400).json({ error: "Неверный собеседник" });
-  }
+app.get("/messages/private/:handle", verify, (req, res) => {
+  const friendHandle = normalizeHandle(req.params.handle);
 
   const messages = db.prepare(`
     SELECT
       m.id,
-      m.user1,
-      m.user2,
       m.sender AS senderHandle,
       u.displayName AS senderName,
       m.text,
-      m.type,
-      m.audioPath,
       m.createdAt
     FROM messages m
     LEFT JOIN users u ON u.handle = m.sender
-    WHERE (m.user1 = ? AND m.user2 = ?)
-       OR (m.user1 = ? AND m.user2 = ?)
+    WHERE m.chatType = 'private'
+      AND (
+        (m.user1 = ? AND m.user2 = ?)
+        OR
+        (m.user1 = ? AND m.user2 = ?)
+      )
     ORDER BY m.createdAt ASC
   `).all(req.user.handle, friendHandle, friendHandle, req.user.handle);
 
   res.json(messages);
 });
 
-/* ---------- VOICE ---------- */
+/* GROUPS */
 
-app.post("/upload-voice", verify, (req, res) => {
-  const audio = String(req.body.audio || "");
+app.post("/groups", verify, (req, res) => {
+  const name = String(req.body.name || "").trim();
+  const description = String(req.body.description || "").trim().slice(0, 300);
 
-  if (!audio.startsWith("data:audio/")) {
-    return res.status(400).json({ error: "Некорректный аудиофайл" });
+  if (!name) {
+    return res.status(400).json({ error: "Название группы обязательно" });
   }
 
-  const match = audio.match(/^data:(audio\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
-  if (!match) {
-    return res.status(400).json({ error: "Ошибка чтения аудио" });
+  const result = db.prepare(`
+    INSERT INTO groups_table (name, description, ownerHandle, createdAt)
+    VALUES (?, ?, ?, ?)
+  `).run(name, description, req.user.handle, Date.now());
+
+  db.prepare(`
+    INSERT INTO group_members (groupId, userHandle, role)
+    VALUES (?, ?, 'owner')
+  `).run(result.lastInsertRowid, req.user.handle);
+
+  res.json({ ok: true, message: "Группа создана", groupId: result.lastInsertRowid });
+});
+
+app.get("/groups", verify, (req, res) => {
+  const groups = db.prepare(`
+    SELECT
+      g.id,
+      g.name,
+      g.description,
+      gm.role
+    FROM group_members gm
+    JOIN groups_table g ON g.id = gm.groupId
+    WHERE gm.userHandle = ?
+    ORDER BY g.createdAt DESC
+  `).all(req.user.handle);
+
+  res.json(groups);
+});
+
+app.get("/groups/:id", verify, (req, res) => {
+  const groupId = Number(req.params.id);
+  const group = getGroup(groupId);
+  const member = getGroupMember(groupId, req.user.handle);
+
+  if (!group || !member) {
+    return res.status(404).json({ error: "Группа не найдена" });
   }
-
-  const mimeType = match[1];
-  const base64Data = match[2];
-
-  const ext = mimeType.includes("webm")
-    ? "webm"
-    : mimeType.includes("ogg")
-    ? "ogg"
-    : mimeType.includes("mp4")
-    ? "mp4"
-    : "webm";
-
-  const fileName = `${req.user.handle}-${Date.now()}.${ext}`;
-  const filePath = path.join(uploadsDir, fileName);
-
-  fs.writeFileSync(filePath, Buffer.from(base64Data, "base64"));
 
   res.json({
-    ok: true,
-    audioPath: `/uploads/${fileName}`
+    id: group.id,
+    name: group.name,
+    description: group.description,
+    ownerHandle: group.ownerHandle,
+    myRole: member.role
   });
 });
 
-/* ---------- WEBSOCKET ---------- */
+app.put("/groups/:id", verify, (req, res) => {
+  const groupId = Number(req.params.id);
+  const name = String(req.body.name || "").trim();
+  const description = String(req.body.description || "").trim().slice(0, 300);
+
+  if (!canManageGroup(groupId, req.user.handle)) {
+    return res.status(403).json({ error: "Недостаточно прав" });
+  }
+
+  if (!name) {
+    return res.status(400).json({ error: "Название группы обязательно" });
+  }
+
+  db.prepare(`
+    UPDATE groups_table
+    SET name = ?, description = ?
+    WHERE id = ?
+  `).run(name, description, groupId);
+
+  res.json({ ok: true, message: "Группа обновлена" });
+});
+
+app.get("/groups/:id/members", verify, (req, res) => {
+  const groupId = Number(req.params.id);
+  const member = getGroupMember(groupId, req.user.handle);
+
+  if (!member) {
+    return res.status(403).json({ error: "Вы не состоите в группе" });
+  }
+
+  const members = db.prepare(`
+    SELECT gm.userHandle AS handle, gm.role, u.displayName
+    FROM group_members gm
+    JOIN users u ON u.handle = gm.userHandle
+    WHERE gm.groupId = ?
+    ORDER BY
+      CASE gm.role
+        WHEN 'owner' THEN 1
+        WHEN 'admin' THEN 2
+        ELSE 3
+      END,
+      u.displayName COLLATE NOCASE ASC
+  `).all(groupId);
+
+  res.json(members);
+});
+
+app.post("/groups/:id/members", verify, (req, res) => {
+  const groupId = Number(req.params.id);
+  const handle = normalizeHandle(req.body.handle);
+
+  if (!canManageGroup(groupId, req.user.handle)) {
+    return res.status(403).json({ error: "Недостаточно прав" });
+  }
+
+  const user = getUserByHandle(handle);
+  if (!user) {
+    return res.status(404).json({ error: "Пользователь не найден" });
+  }
+
+  const exists = getGroupMember(groupId, handle);
+  if (exists) {
+    return res.status(400).json({ error: "Участник уже в группе" });
+  }
+
+  db.prepare(`
+    INSERT INTO group_members (groupId, userHandle, role)
+    VALUES (?, ?, 'member')
+  `).run(groupId, handle);
+
+  res.json({ ok: true, message: "Участник добавлен" });
+});
+
+app.post("/groups/:id/role", verify, (req, res) => {
+  const groupId = Number(req.params.id);
+  const handle = normalizeHandle(req.body.handle);
+  const role = String(req.body.role || "").trim();
+
+  if (!["member", "admin"].includes(role)) {
+    return res.status(400).json({ error: "Некорректная роль" });
+  }
+
+  const myMember = getGroupMember(groupId, req.user.handle);
+  const targetMember = getGroupMember(groupId, handle);
+
+  if (!myMember || !targetMember) {
+    return res.status(404).json({ error: "Участник не найден" });
+  }
+
+  if (!(myMember.role === "owner" || myMember.role === "admin")) {
+    return res.status(403).json({ error: "Недостаточно прав" });
+  }
+
+  if (targetMember.role === "owner") {
+    return res.status(400).json({ error: "Нельзя изменить владельца" });
+  }
+
+  db.prepare(`
+    UPDATE group_members
+    SET role = ?
+    WHERE groupId = ? AND userHandle = ?
+  `).run(role, groupId, handle);
+
+  res.json({ ok: true, message: "Роль изменена" });
+});
+
+app.get("/groups/:id/messages", verify, (req, res) => {
+  const groupId = Number(req.params.id);
+  const member = getGroupMember(groupId, req.user.handle);
+
+  if (!member) {
+    return res.status(403).json({ error: "Вы не состоите в группе" });
+  }
+
+  const messages = db.prepare(`
+    SELECT
+      m.id,
+      m.sender AS senderHandle,
+      u.displayName AS senderName,
+      m.text,
+      m.createdAt,
+      m.groupId
+    FROM messages m
+    LEFT JOIN users u ON u.handle = m.sender
+    WHERE m.chatType = 'group'
+      AND m.groupId = ?
+    ORDER BY m.createdAt ASC
+  `).all(groupId);
+
+  res.json(messages);
+});
+
+/* WEBSOCKET */
 
 const onlineUsers = new Map();
 
@@ -399,62 +638,98 @@ wss.on("connection", (ws) => {
 
       if (data.type === "join") {
         const decoded = jwt.verify(data.token, SECRET);
-        ws.user = decoded;
-        onlineUsers.set(decoded.handle, ws);
+        const user = db.prepare(`SELECT * FROM users WHERE id = ?`).get(decoded.id);
+        if (!user || isBlocked(user)) return;
+
+        ws.user = user;
+        onlineUsers.set(user.handle, ws);
+        return;
+      }
+
+      if (!ws.user) return;
+
+      const freshUser = getUserByHandle(ws.user.handle);
+      if (!freshUser || isBlocked(freshUser)) {
+        sendJson(ws, { type: "moderation", message: freshUser ? blockText(freshUser) : "Доступ запрещён" });
         return;
       }
 
       if (data.type === "privateMessage") {
-        if (!ws.user) return;
-
-        const senderHandle = ws.user.handle;
         const to = normalizeHandle(data.to);
-        const messageType = data.messageType === "audio" ? "audio" : "text";
-        const text = messageType === "text" ? String(data.text || "").trim() : "";
-        const audioPath = messageType === "audio" ? String(data.audioPath || "") : null;
+        const text = String(data.text || "").trim();
 
-        if (!to) return;
-        if (messageType === "text" && !text) return;
-        if (messageType === "audio" && !audioPath) return;
+        if (!to || !text) return;
+        if (!areFriends(freshUser.handle, to)) {
+          sendJson(ws, { type: "moderation", message: "Можно писать только друзьям" });
+          return;
+        }
 
-        const senderUser = getUserByHandle(senderHandle);
-        const targetUser = getUserByHandle(to);
-
-        if (!senderUser || !targetUser) return;
-        if (!areFriends(senderHandle, to)) return;
+        const moderation = moderateMessage(freshUser.handle, text);
+        if (!moderation.ok) {
+          sendJson(ws, { type: "moderation", message: moderation.message });
+          return;
+        }
 
         const createdAt = Date.now();
 
         db.prepare(`
-          INSERT INTO messages (user1, user2, sender, text, type, audioPath, createdAt)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          senderHandle,
-          to,
-          senderHandle,
-          text,
-          messageType,
-          audioPath,
-          createdAt
-        );
+          INSERT INTO messages (user1, user2, sender, text, createdAt, chatType, groupId)
+          VALUES (?, ?, ?, ?, ?, 'private', NULL)
+        `).run(freshUser.handle, to, freshUser.handle, text, createdAt);
 
         const payload = {
           type: "privateMessage",
-          senderHandle,
-          senderName: senderUser.displayName,
-          messageType,
+          senderHandle: freshUser.handle,
+          senderName: freshUser.displayName,
           text,
-          audioPath,
           createdAt
         };
 
-        const targetSocket = onlineUsers.get(to);
-        if (targetSocket && targetSocket.readyState === WebSocket.OPEN) {
-          targetSocket.send(JSON.stringify(payload));
+        sendJson(ws, payload);
+        sendJson(onlineUsers.get(to), payload);
+      }
+
+      if (data.type === "groupMessage") {
+        const groupId = Number(data.groupId);
+        const text = String(data.text || "").trim();
+        if (!groupId || !text) return;
+
+        const member = getGroupMember(groupId, freshUser.handle);
+        if (!member) {
+          sendJson(ws, { type: "moderation", message: "Вы не участник этой группы" });
+          return;
         }
+
+        const moderation = moderateMessage(freshUser.handle, text);
+        if (!moderation.ok) {
+          sendJson(ws, { type: "moderation", message: moderation.message });
+          return;
+        }
+
+        const createdAt = Date.now();
+
+        db.prepare(`
+          INSERT INTO messages (user1, user2, sender, text, createdAt, chatType, groupId)
+          VALUES (NULL, NULL, ?, ?, ?, 'group', ?)
+        `).run(freshUser.handle, text, createdAt, groupId);
+
+        const payload = {
+          type: "groupMessage",
+          groupId,
+          senderHandle: freshUser.handle,
+          senderName: freshUser.displayName,
+          text,
+          createdAt
+        };
+
+        const members = db.prepare(`
+          SELECT userHandle FROM group_members WHERE groupId = ?
+        `).all(groupId);
+
+        members.forEach((m) => sendJson(onlineUsers.get(m.userHandle), payload));
       }
     } catch (err) {
-      console.error("WebSocket error:", err.message);
+      console.log("WS error:", err.message);
     }
   });
 
@@ -466,5 +741,5 @@ wss.on("connection", (ws) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log("Server running on port " + PORT);
 });
