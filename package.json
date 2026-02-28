@@ -1,6 +1,7 @@
 {
   "name": "messenger",
-  "version": "1.0.0",
+  "version": "2.0.0",
+  "description": "Realtime messenger without phone number, with username search, profile editing and voice messages",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
