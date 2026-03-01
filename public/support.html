@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>One Messenger Support</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="app-body">
+  <div class="support-page">
+    <div class="support-topbar">
+      <a href="chat.html" class="secondary-btn center-link">← Назад в мессенджер</a>
+      <button id="themeToggleBtn" class="secondary-btn" type="button">Тема</button>
+    </div>
+
+    <div class="support-layout">
+      <section class="support-hero panel">
+        <h1>Поддержка One Messenger</h1>
+        <p>
+          Здесь можно написать о проблеме с входом, группами, медиа, историями,
+          блокировкой, аватарками или двухэтапной защитой.
+        </p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">Новое обращение</div>
+        <div class="stack">
+          <input id="supportSubject" placeholder="Тема" />
+          <textarea id="supportMessage" rows="7" placeholder="Опишите проблему подробно"></textarea>
+          <button id="sendSupportBtn" class="primary-btn full-btn" type="button">Отправить в поддержку</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">Мои обращения</div>
+        <div id="supportTicketsList" class="stack"></div>
+      </section>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
