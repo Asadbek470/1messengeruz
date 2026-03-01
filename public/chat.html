@@ -1,76 +1,44 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>One Messenger</title>
-  <link rel="stylesheet" href="style.css" />
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Chat - One Messenger</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        /* Временные стили для чата, потом вынесем в основной CSS */
+        .chat-layout { display: flex; height: 100vh; width: 100%; overflow: hidden; }
+        .sidebar { width: 300px; background: white; border-right: 1px solid #DDD; }
+        .main-chat { flex-grow: 1; display: flex; flex-direction: column; background: #FFF; }
+        .messages { flex-grow: 1; padding: 20px; overflow-y: auto; }
+        .input-area { padding: 15px; border-top: 1px solid #DDD; display: flex; }
+        .nav-menu { height: 60px; border-top: 1px solid #DDD; display: flex; justify-content: space-around; align-items: center; background: white; }
+        
+        @media (max-width: 768px) {
+            .sidebar { display: none; } /* На мобилках скрываем список чатов для теста */
+        }
+    </style>
 </head>
-<body class="auth-page">
-  <div class="auth-shell">
-    <section class="auth-left">
-      <div class="brand-badge">One Messenger</div>
-      <h1>Мессенджер без номера телефона</h1>
-      <p>
-        Личные чаты, группы, фото, видео, голосовые сообщения
-        и один аккуратный интерфейс для телефона, планшета и ПК.
-      </p>
-    </section>
-
-    <section class="auth-card">
-      <div class="auth-tabs">
-        <button id="tabLogin" class="tab-btn active" type="button">Вход</button>
-        <button id="tabRegister" class="tab-btn" type="button">Регистрация</button>
-      </div>
-
-      <div id="loginView" class="auth-view active">
-        <h2>Войти</h2>
-        <p class="muted">
-          Нет аккаунта?
-          <button id="showRegisterLink" class="link-btn" type="button">Создать аккаунт</button>
-        </p>
-
-        <div class="field-group">
-          <label for="loginIdentifier">Юзернейм или имя</label>
-          <input id="loginIdentifier" placeholder="asadbek000" />
+<body>
+    <div class="chat-layout">
+        <div class="sidebar">
+            <div style="padding: 20px;"><h3>Чаты</h3></div>
         </div>
-
-        <div class="field-group">
-          <label for="loginPassword">Пароль</label>
-          <input id="loginPassword" type="password" placeholder="Введите пароль" />
+        <div class="main-chat">
+            <div class="messages" id="chatBox">
+                <p>Добро пожаловать в One Messenger!</p>
+            </div>
+            <div class="input-area">
+                <input type="text" id="msgInput" placeholder="Сообщение...">
+                <button id="sendBtn" style="width: 80px; margin-top:0; margin-left:10px;">-></button>
+            </div>
+            <div class="nav-menu">
+                <span>Чаты</span>
+                <span>Группы</span>
+                <span>Профиль</span>
+            </div>
         </div>
-
-        <button id="loginBtn" class="primary-btn full-btn" type="button">Войти</button>
-      </div>
-
-      <div id="registerView" class="auth-view">
-        <h2>Создать аккаунт</h2>
-        <p class="muted">
-          Уже есть аккаунт?
-          <button id="showLoginLink" class="link-btn" type="button">Войти</button>
-        </p>
-
-        <div class="field-group">
-          <label for="registerName">Отображаемое имя</label>
-          <input id="registerName" placeholder="Asadbek" />
-        </div>
-
-        <div class="field-group">
-          <label for="registerHandle">Юзернейм</label>
-          <input id="registerHandle" placeholder="asadbek000" />
-        </div>
-
-        <div class="field-group">
-          <label for="registerPassword">Пароль</label>
-          <input id="registerPassword" type="password" placeholder="Минимум 4 символа" />
-        </div>
-
-        <button id="registerBtn" class="primary-btn full-btn" type="button">Создать аккаунт</button>
-      </div>
-    </section>
-  </div>
-
-  <div id="toast" class="toast"></div>
-  <script src="app.js"></script>
+    </div>
+    <script src="app.js"></script>
 </body>
 </html>
