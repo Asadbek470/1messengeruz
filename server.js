@@ -5,10 +5,16 @@ const Database = require("better-sqlite3");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const path = require("path");
+const fs = require("fs");
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "50mb" }));
 app.use(express.static(path.join(__dirname, "public")));
+
+const uploadsDir = path.join(__dirname, "public", "uploads");
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
 
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
@@ -71,6 +77,8 @@ safeAlter(`ALTER TABLE users ADD COLUMN strikes INTEGER DEFAULT 0`);
 
 safeAlter(`ALTER TABLE messages ADD COLUMN chatType TEXT DEFAULT 'private'`);
 safeAlter(`ALTER TABLE messages ADD COLUMN groupId INTEGER`);
+safeAlter(`ALTER TABLE messages ADD COLUMN mediaType TEXT DEFAULT 'text'`);
+safeAlter(`ALTER TABLE messages ADD COLUMN mediaUrl TEXT`);
 
 safeAlter(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_handle_unique ON users(handle)`);
 
@@ -248,6 +256,35 @@ function sendJson(ws, payload) {
   }
 }
 
+function saveBase64Media(base64String, mediaType) {
+  if (!base64String || typeof base64String !== "string") return null;
+
+  const match = base64String.match(/^data:(.+);base64,(.+)$/);
+  if (!match) return null;
+
+  const mimeType = match[1];
+  const base64Data = match[2];
+
+  let ext = "bin";
+
+  if (mimeType.includes("jpeg")) ext = "jpg";
+  else if (mimeType.includes("jpg")) ext = "jpg";
+  else if (mimeType.includes("png")) ext = "png";
+  else if (mimeType.includes("gif")) ext = "gif";
+  else if (mimeType.includes("webp")) ext = "webp";
+  else if (mimeType.includes("mp4")) ext = "mp4";
+  else if (mimeType.includes("webm")) ext = "webm";
+  else if (mimeType.includes("ogg")) ext = "ogg";
+  else if (mimeType.includes("mpeg")) ext = "mp3";
+
+  const fileName = `${mediaType}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${ext}`;
+  const filePath = path.join(uploadsDir, fileName);
+
+  fs.writeFileSync(filePath, Buffer.from(base64Data, "base64"));
+
+  return `/uploads/${fileName}`;
+}
+
 /* AUTH */
 
 app.post("/register", async (req, res) => {
@@ -423,7 +460,9 @@ app.get("/messages/private/:handle", verify, (req, res) => {
       m.sender AS senderHandle,
       u.displayName AS senderName,
       m.text,
-      m.createdAt
+      m.createdAt,
+      m.mediaType,
+      m.mediaUrl
     FROM messages m
     LEFT JOIN users u ON u.handle = m.sender
     WHERE m.chatType = 'private'
@@ -616,7 +655,9 @@ app.get("/groups/:id/messages", verify, (req, res) => {
       u.displayName AS senderName,
       m.text,
       m.createdAt,
-      m.groupId
+      m.groupId,
+      m.mediaType,
+      m.mediaUrl
     FROM messages m
     LEFT JOIN users u ON u.handle = m.sender
     WHERE m.chatType = 'group'
@@ -657,32 +698,60 @@ wss.on("connection", (ws) => {
       if (data.type === "privateMessage") {
         const to = normalizeHandle(data.to);
         const text = String(data.text || "").trim();
+        const mediaType = String(data.mediaType || "text");
+        const mediaBase64 = data.mediaBase64 || null;
 
-        if (!to || !text) return;
+        if (!to) return;
         if (!areFriends(freshUser.handle, to)) {
           sendJson(ws, { type: "moderation", message: "Можно писать только друзьям" });
           return;
         }
 
-        const moderation = moderateMessage(freshUser.handle, text);
-        if (!moderation.ok) {
-          sendJson(ws, { type: "moderation", message: moderation.message });
-          return;
+        const isTextOnly = mediaType === "text";
+        if (isTextOnly && !text) return;
+        if (!isTextOnly && !mediaBase64) return;
+
+        if (text) {
+          const moderation = moderateMessage(freshUser.handle, text);
+          if (!moderation.ok) {
+            sendJson(ws, { type: "moderation", message: moderation.message });
+            return;
+          }
         }
 
         const createdAt = Date.now();
+        let mediaUrl = null;
+
+        if (!isTextOnly) {
+          mediaUrl = saveBase64Media(mediaBase64, mediaType);
+          if (!mediaUrl) {
+            sendJson(ws, { type: "moderation", message: "Ошибка загрузки медиа" });
+            return;
+          }
+        }
 
         db.prepare(`
-          INSERT INTO messages (user1, user2, sender, text, createdAt, chatType, groupId)
-          VALUES (?, ?, ?, ?, ?, 'private', NULL)
-        `).run(freshUser.handle, to, freshUser.handle, text, createdAt);
+          INSERT INTO messages (user1, user2, sender, text, createdAt, chatType, groupId, mediaType, mediaUrl)
+          VALUES (?, ?, ?, ?, ?, 'private', NULL, ?, ?)
+        `).run(
+          freshUser.handle,
+          to,
+          freshUser.handle,
+          text,
+          createdAt,
+          mediaType,
+          mediaUrl
+        );
 
         const payload = {
           type: "privateMessage",
           senderHandle: freshUser.handle,
           senderName: freshUser.displayName,
+          to,
           text,
-          createdAt
+          createdAt,
+          mediaType,
+          mediaUrl
         };
 
         sendJson(ws, payload);
@@ -692,7 +761,10 @@ wss.on("connection", (ws) => {
       if (data.type === "groupMessage") {
         const groupId = Number(data.groupId);
         const text = String(data.text || "").trim();
-        if (!groupId || !text) return;
+        const mediaType = String(data.mediaType || "text");
+        const mediaBase64 = data.mediaBase64 || null;
+
+        if (!groupId) return;
 
         const member = getGroupMember(groupId, freshUser.handle);
         if (!member) {
@@ -700,18 +772,40 @@ wss.on("connection", (ws) => {
           return;
         }
 
-        const moderation = moderateMessage(freshUser.handle, text);
-        if (!moderation.ok) {
-          sendJson(ws, { type: "moderation", message: moderation.message });
-          return;
+        const isTextOnly = mediaType === "text";
+        if (isTextOnly && !text) return;
+        if (!isTextOnly && !mediaBase64) return;
+
+        if (text) {
+          const moderation = moderateMessage(freshUser.handle, text);
+          if (!moderation.ok) {
+            sendJson(ws, { type: "moderation", message: moderation.message });
+            return;
+          }
         }
 
         const createdAt = Date.now();
+        let mediaUrl = null;
+
+        if (!isTextOnly) {
+          mediaUrl = saveBase64Media(mediaBase64, mediaType);
+          if (!mediaUrl) {
+            sendJson(ws, { type: "moderation", message: "Ошибка загрузки медиа" });
+            return;
+          }
+        }
 
         db.prepare(`
-          INSERT INTO messages (user1, user2, sender, text, createdAt, chatType, groupId)
-          VALUES (NULL, NULL, ?, ?, ?, 'group', ?)
-        `).run(freshUser.handle, text, createdAt, groupId);
+          INSERT INTO messages (user1, user2, sender, text, createdAt, chatType, groupId, mediaType, mediaUrl)
+          VALUES (NULL, NULL, ?, ?, ?, 'group', ?, ?, ?)
+        `).run(
+          freshUser.handle,
+          text,
+          createdAt,
+          groupId,
+          mediaType,
+          mediaUrl
+        );
 
         const payload = {
           type: "groupMessage",
@@ -719,7 +813,9 @@ wss.on("connection", (ws) => {
           senderHandle: freshUser.handle,
           senderName: freshUser.displayName,
           text,
-          createdAt
+          createdAt,
+          mediaType,
+          mediaUrl
         };
 
         const members = db.prepare(`
