@@ -1,860 +1,155 @@
-const isChatPage = location.pathname.includes("chat");
-
-const state = {
-  currentChat: null,
-  currentGroup: null,
-  ws: null,
-  me: null,
-  token: localStorage.getItem("token"),
-  mediaRecorder: null,
-  recordedChunks: [],
-  isRecording: false
-};
-
-function $(id) {
-  return document.getElementById(id);
-}
-
-function showToast(text, isError = false) {
-  const toast = $("toast");
-  if (!toast) {
-    alert(text);
-    return;
-  }
-
-  toast.textContent = text;
-  toast.style.color = isError ? "#e14b4b" : "";
-  toast.classList.add("show");
-
-  setTimeout(() => {
-    toast.classList.remove("show");
-    toast.style.color = "";
-  }, 2600);
-}
-
-function normalizeHandle(value = "") {
-  return String(value).trim().replace(/^@+/, "").toLowerCase();
-}
-
-function escapeHtml(text = "") {
-  return String(text)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
-function fullName(user) {
-  return [user.lastName, user.firstName, user.middleName].filter(Boolean).join(" ").trim() || user.displayName || "Пользователь";
-}
-
-async function api(url, options = {}) {
-  const headers = { ...(options.headers || {}) };
-
-  if (!(options.body instanceof FormData) && !headers["Content-Type"]) {
-    headers["Content-Type"] = "application/json";
-  }
-
-  if (state.token) {
-    headers.Authorization = "Bearer " + state.token;
-  }
-
-  const response = await fetch(url, { ...options, headers });
-  const data = await response.json().catch(() => ({}));
-
-  if (!response.ok) {
-    throw new Error(data.error || "Ошибка запроса");
-  }
-
-  return data;
-}
-
-function switchAuth(mode) {
-  $("loginView").classList.toggle("active", mode === "login");
-  $("registerView").classList.toggle("active", mode === "register");
-  $("tabLogin").classList.toggle("active", mode === "login");
-  $("tabRegister").classList.toggle("active", mode === "register");
-}
-
-/* AUTH */
-
-async function login() {
-  try {
-    const identifier = $("loginIdentifier").value.trim();
-    const password = $("loginPassword").value.trim();
-
-    if (!identifier || !password) {
-      showToast("Заполни логин и пароль", true);
-      return;
-    }
-
-    const data = await api("/login", {
-      method: "POST",
-      body: JSON.stringify({ identifier, password })
-    });
-
-    state.token = data.token;
-    localStorage.setItem("token", data.token);
-    window.location.href = "chat.html";
-  } catch (err) {
-    showToast(err.message, true);
-  }
-}
-
-async function register() {
-  try {
-    const displayName = $("registerName").value.trim();
-    const handle = normalizeHandle($("registerHandle").value);
-    const password = $("registerPassword").value.trim();
-
-    if (!displayName || !handle || !password) {
-      showToast("Заполни все поля", true);
-      return;
-    }
-
-    const data = await api("/register", {
-      method: "POST",
-      body: JSON.stringify({ displayName, handle, password })
-    });
-
-    state.token = data.token;
-    localStorage.setItem("token", data.token);
-    window.location.href = "chat.html";
-  } catch (err) {
-    showToast(err.message, true);
-  }
-}
-
-function initAuthPage() {
-  $("tabLogin")?.addEventListener("click", () => switchAuth("login"));
-  $("tabRegister")?.addEventListener("click", () => switchAuth("register"));
-  $("showRegisterLink")?.addEventListener("click", () => switchAuth("register"));
-  $("showLoginLink")?.addEventListener("click", () => switchAuth("login"));
-  $("loginBtn")?.addEventListener("click", login);
-  $("registerBtn")?.addEventListener("click", register);
-
-  ["loginIdentifier", "loginPassword"].forEach((id) => {
-    $(id)?.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") login();
-    });
-  });
-
-  ["registerName", "registerHandle", "registerPassword"].forEach((id) => {
-    $(id)?.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") register();
-    });
-  });
-}
-
-/* CHAT */
-
-function logout() {
-  localStorage.removeItem("token");
-  state.token = null;
-  window.location.href = "index.html";
-}
-
-function openModal(id) {
-  $(id)?.classList.remove("hidden");
-}
-
-function closeModal(id) {
-  $(id)?.classList.add("hidden");
-}
-
-function toggleSidebar(force) {
-  const sidebar = $("sidebar");
-  if (!sidebar) return;
-
-  if (typeof force === "boolean") sidebar.classList.toggle("open", force);
-  else sidebar.classList.toggle("open");
-}
-
-function setChatHeader(title, subtitle) {
-  $("chatTitle").textContent = title;
-  $("chatSubtitle").textContent = subtitle;
-}
-
-function formatTime(ts) {
-  return new Date(ts).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit"
-  });
-}
-
-function fileToBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
-
-function renderMedia(msg) {
-  if (msg.mediaType === "image" && msg.mediaUrl) {
-    return `<div class="message-media"><img src="${escapeHtml(msg.mediaUrl)}" alt="image"></div>`;
-  }
-
-  if (msg.mediaType === "video" && msg.mediaUrl) {
-    return `<div class="message-media"><video controls src="${escapeHtml(msg.mediaUrl)}"></video></div>`;
-  }
-
-  if (msg.mediaType === "audio" && msg.mediaUrl) {
-    return `<audio class="message-audio" controls src="${escapeHtml(msg.mediaUrl)}"></audio>`;
-  }
-
-  return "";
-}
-
-function renderMessage(msg) {
-  const mine = msg.senderHandle === state.me?.handle;
-
-  const row = document.createElement("div");
-  row.className = `message-row ${mine ? "mine" : "other"}`;
-
-  row.innerHTML = `
-    <div class="message-bubble">
-      <div class="message-meta">
-        ${mine ? "Вы" : escapeHtml(msg.senderName || msg.senderHandle)} • ${formatTime(msg.createdAt)}
-      </div>
-      ${msg.text ? `<div>${escapeHtml(msg.text)}</div>` : ""}
-      ${renderMedia(msg)}
-    </div>
-  `;
-
-  return row;
-}
-
-function scrollMessages() {
-  const box = $("messages");
-  if (box) box.scrollTop = box.scrollHeight;
-}
-
-async function loadProfile() {
-  const me = await api("/me");
-  state.me = me;
-
-  const shownName = `${fullName(me)}${me.profileSticker ? " " + me.profileSticker : ""}`;
-  $("selfName").textContent = shownName;
-  $("selfHandle").textContent = "@" + (me.handle || "username");
-
-  let bioText = me.bio || "Без описания";
-  if (me.birthDate) bioText += ` • 🎂 ${me.birthDate}`;
-  $("selfBio").textContent = bioText;
-
-  $("profileNameInput").value = me.displayName || "";
-  $("profileHandleInput").value = me.handle || "";
-  $("profileBioInput").value = me.bio || "";
-  $("firstNameInput").value = me.firstName || "";
-  $("lastNameInput").value = me.lastName || "";
-  $("middleNameInput").value = me.middleName || "";
-  $("birthDateInput").value = me.birthDate || "";
-  $("profileStickerInput").value = me.profileSticker || "";
-}
-
-async function saveProfile() {
-  try {
-    const displayName = $("profileNameInput").value.trim();
-    const handle = normalizeHandle($("profileHandleInput").value);
-    const bio = $("profileBioInput").value.trim();
-    const firstName = $("firstNameInput").value.trim();
-    const lastName = $("lastNameInput").value.trim();
-    const middleName = $("middleNameInput").value.trim();
-    const birthDate = $("birthDateInput").value.trim();
-    const profileSticker = $("profileStickerInput").value.trim();
-
-    const data = await api("/me", {
-      method: "PUT",
-      body: JSON.stringify({
-        displayName,
-        handle,
-        bio,
-        firstName,
-        lastName,
-        middleName,
-        birthDate,
-        profileSticker
-      })
-    });
-
-    if (data.token) {
-      state.token = data.token;
-      localStorage.setItem("token", data.token);
-    }
-
-    showToast(data.message || "Профиль сохранён");
-    closeModal("profileModal");
-    await loadProfile();
-    await loadPrivateChats();
-
-    if (state.ws) {
-      try {
-        state.ws.close();
-      } catch {}
-      connectSocket();
-    }
-  } catch (err) {
-    showToast(err.message, true);
-  }
-}
-
-async function searchUsers() {
-  try {
-    const q = normalizeHandle($("friendSearchInput").value);
-    const results = $("searchResults");
-    results.innerHTML = "";
-
-    if (!q) {
-      showToast("Введи юзернейм", true);
-      return;
-    }
-
-    const users = await api("/users/search?q=" + encodeURIComponent(q));
-
-    if (!users.length) {
-      results.innerHTML = `<div class="list-item">Никого не найдено</div>`;
-      return;
-    }
-
-    users.forEach((user) => {
-      const item = document.createElement("div");
-      item.className = "list-item";
-
-      const shownName = `${fullName(user)}${user.profileSticker ? " " + user.profileSticker : ""}`;
-
-      item.innerHTML = `
-        <div class="list-title">${escapeHtml(shownName)}</div>
-        <div class="list-subtitle">@${escapeHtml(user.handle)}</div>
-        <div class="list-subtitle">${escapeHtml(user.bio || "Без описания")}</div>
-        <div class="list-subtitle">${user.birthDate ? "🎂 " + escapeHtml(user.birthDate) : ""}</div>
-        <div class="item-actions">
-          <button class="primary-btn add-friend-btn" data-handle="${escapeHtml(user.handle)}" type="button">Добавить</button>
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>One Messenger</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="chat-page">
+  <div class="app-layout">
+    <aside id="sidebar" class="sidebar">
+      <div id="sidebarTopAnchor" class="sidebar-top">
+        <div>
+          <div class="logo-text">One Messenger</div>
+          <div class="sidebar-subtitle">без SIM</div>
         </div>
-      `;
-      results.appendChild(item);
-    });
+        <button id="closeSidebarBtn" class="ghost-btn mobile-only" type="button">✕</button>
+      </div>
 
-    results.querySelectorAll(".add-friend-btn").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        try {
-          const data = await api("/add-friend", {
-            method: "POST",
-            body: JSON.stringify({ handle: btn.dataset.handle })
-          });
-          showToast(data.message || "Друг добавлен");
-          $("friendSearchInput").value = "";
-          results.innerHTML = "";
-          await loadPrivateChats();
-        } catch (err) {
-          showToast(err.message, true);
-        }
-      });
-    });
-  } catch (err) {
-    showToast(err.message, true);
-  }
-}
+      <section id="profileSection" class="panel">
+        <div class="panel-title">Ваш профиль</div>
+        <div id="selfName" class="profile-name">Пользователь</div>
+        <div id="selfHandle" class="profile-handle">@username</div>
+        <div id="selfBio" class="profile-bio">Без описания</div>
 
-async function loadPrivateChats() {
-  const list = $("privateChatsList");
-  list.innerHTML = "";
+        <div class="button-stack">
+          <button id="openProfileBtn" class="ghost-btn" type="button">Изменить профиль</button>
+          <button id="logoutBtn" class="danger-btn" type="button">Выйти</button>
+        </div>
+      </section>
 
-  const chats = await api("/private-chats");
+      <section class="panel">
+        <div class="panel-title">Найти пользователя</div>
+        <div class="search-row">
+          <input id="friendSearchInput" placeholder="@username" />
+          <button id="friendSearchBtn" class="primary-btn" type="button">Найти</button>
+        </div>
+        <div id="searchResults" class="list-stack"></div>
+      </section>
 
-  if (!chats.length) {
-    list.innerHTML = `<div class="list-item">Пока нет личных чатов</div>`;
-    return;
-  }
+      <section class="panel">
+        <div class="panel-title">Создать группу</div>
+        <div class="form-stack">
+          <input id="newGroupName" placeholder="Название группы" />
+          <textarea id="newGroupDescription" rows="2" placeholder="Описание группы"></textarea>
+          <button id="createGroupBtn" class="primary-btn full-btn" type="button">Создать группу</button>
+        </div>
+      </section>
 
-  chats.forEach((chat) => {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "list-item-button";
+      <section class="panel grow-panel">
+        <div id="chatsSection" class="panel-title">Личные чаты</div>
+        <div id="privateChatsList" class="list-stack"></div>
 
-    let preview = "Нет сообщений";
-    if (chat.lastMessageType === "image") preview = "📷 Фото";
-    else if (chat.lastMessageType === "video") preview = "🎬 Видео";
-    else if (chat.lastMessageType === "audio") preview = "🎙 Голосовое";
-    else if (chat.lastMessageText) preview = chat.lastMessageText;
+        <div id="groupsSection" class="panel-title section-gap">Группы</div>
+        <div id="groupsList" class="list-stack"></div>
+      </section>
+    </aside>
 
-    const shownName = `${fullName(chat)}${chat.profileSticker ? " " + chat.profileSticker : ""}`;
-
-    btn.innerHTML = `
-      <div class="list-title">${escapeHtml(shownName)}</div>
-      <div class="list-subtitle">@${escapeHtml(chat.handle)}</div>
-      <div class="list-subtitle">${chat.birthDate ? "🎂 " + escapeHtml(chat.birthDate) : ""}</div>
-      <div class="list-subtitle">${escapeHtml(preview)}</div>
-    `;
-
-    btn.addEventListener("click", () => openPrivateChat(chat));
-    list.appendChild(btn);
-  });
-}
-
-async function loadGroups() {
-  const list = $("groupsList");
-  list.innerHTML = "";
-
-  const groups = await api("/groups");
-
-  if (!groups.length) {
-    list.innerHTML = `<div class="list-item">Пока нет групп</div>`;
-    return;
-  }
-
-  groups.forEach((group) => {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "list-item-button";
-    btn.innerHTML = `
-      <div class="list-title">${escapeHtml(group.name)}</div>
-      <div class="list-subtitle">${escapeHtml(group.role || "")}</div>
-      <div class="list-subtitle">${escapeHtml(group.description || "Без описания")}</div>
-    `;
-    btn.addEventListener("click", () => openGroupChat(group));
-    list.appendChild(btn);
-  });
-}
-
-async function openPrivateChat(friend) {
-  state.currentChat = {
-    type: "private",
-    handle: friend.handle
-  };
-  state.currentGroup = null;
-
-  $("manageGroupBtn").classList.add("hidden");
-
-  const shownName = `${fullName(friend)}${friend.profileSticker ? " " + friend.profileSticker : ""}`;
-  const subtitle = friend.birthDate ? `@${friend.handle} • 🎂 ${friend.birthDate}` : `@${friend.handle}`;
-
-  setChatHeader(shownName, subtitle);
-
-  const msgs = await api("/messages/private/" + encodeURIComponent(friend.handle));
-  const box = $("messages");
-  box.innerHTML = "";
-
-  if (!msgs.length) {
-    box.innerHTML = `<div class="empty-state">Начните диалог первым</div>`;
-    toggleSidebar(false);
-    return;
-  }
-
-  msgs.forEach((msg) => box.appendChild(renderMessage(msg)));
-  scrollMessages();
-  toggleSidebar(false);
-}
-
-async function openGroupChat(group) {
-  state.currentChat = {
-    type: "group",
-    id: group.id
-  };
-  state.currentGroup = group;
-
-  $("manageGroupBtn").classList.remove("hidden");
-  setChatHeader(group.name, group.description || group.role || "Группа");
-
-  const msgs = await api("/groups/" + group.id + "/messages");
-  const box = $("messages");
-  box.innerHTML = "";
-
-  if (!msgs.length) {
-    box.innerHTML = `<div class="empty-state">В этой группе пока нет сообщений</div>`;
-    toggleSidebar(false);
-    return;
-  }
-
-  msgs.forEach((msg) => box.appendChild(renderMessage(msg)));
-  scrollMessages();
-  toggleSidebar(false);
-}
-
-function connectSocket() {
-  if (!state.token) return;
-
-  state.ws = new WebSocket(
-    location.protocol === "https:"
-      ? "wss://" + location.host
-      : "ws://" + location.host
-  );
-
-  state.ws.onopen = () => {
-    state.ws.send(JSON.stringify({ type: "join", token: state.token }));
-  };
-
-  state.ws.onmessage = (event) => {
-    const data = JSON.parse(event.data);
-
-    if (data.type === "privateMessage") {
-      if (
-        state.currentChat?.type === "private" &&
-        (data.senderHandle === state.currentChat.handle || data.to === state.currentChat.handle)
-      ) {
-        $("messages").appendChild(renderMessage(data));
-        scrollMessages();
-      }
-      loadPrivateChats();
-    }
-
-    if (data.type === "groupMessage") {
-      if (
-        state.currentChat?.type === "group" &&
-        Number(state.currentChat.id) === Number(data.groupId)
-      ) {
-        $("messages").appendChild(renderMessage(data));
-        scrollMessages();
-      }
-      loadGroups();
-    }
-
-    if (data.type === "moderation") {
-      showToast(data.message, true);
-    }
-  };
-
-  state.ws.onclose = () => {
-    setTimeout(() => {
-      if (state.token) connectSocket();
-    }, 1500);
-  };
-}
-
-function sendMessage() {
-  const input = $("messageInput");
-  const text = input.value.trim();
-
-  if (!state.currentChat) {
-    showToast("Сначала выбери чат", true);
-    return;
-  }
-
-  if (!text) return;
-
-  if (state.currentChat.type === "private") {
-    state.ws.send(JSON.stringify({
-      type: "privateMessage",
-      to: state.currentChat.handle,
-      text,
-      mediaType: "text"
-    }));
-  }
-
-  if (state.currentChat.type === "group") {
-    state.ws.send(JSON.stringify({
-      type: "groupMessage",
-      groupId: state.currentChat.id,
-      text,
-      mediaType: "text"
-    }));
-  }
-
-  input.value = "";
-}
-
-async function sendMediaFile(file) {
-  try {
-    if (!state.currentChat) {
-      showToast("Сначала выбери чат", true);
-      return;
-    }
-
-    const base64 = await fileToBase64(file);
-
-    let mediaType = "image";
-    if (file.type.startsWith("video/")) mediaType = "video";
-    if (file.type.startsWith("audio/")) mediaType = "audio";
-
-    if (state.currentChat.type === "private") {
-      state.ws.send(JSON.stringify({
-        type: "privateMessage",
-        to: state.currentChat.handle,
-        text: "",
-        mediaType,
-        mediaBase64: base64
-      }));
-    }
-
-    if (state.currentChat.type === "group") {
-      state.ws.send(JSON.stringify({
-        type: "groupMessage",
-        groupId: state.currentChat.id,
-        text: "",
-        mediaType,
-        mediaBase64: base64
-      }));
-    }
-  } catch {
-    showToast("Ошибка отправки файла", true);
-  }
-}
-
-async function toggleVoiceRecording() {
-  try {
-    if (!state.currentChat) {
-      showToast("Сначала выбери чат", true);
-      return;
-    }
-
-    const btn = $("recordVoiceBtn");
-
-    if (state.isRecording && state.mediaRecorder) {
-      state.mediaRecorder.stop();
-      state.isRecording = false;
-      btn.textContent = "🎙";
-      return;
-    }
-
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    state.recordedChunks = [];
-
-    const recorder = new MediaRecorder(stream);
-    state.mediaRecorder = recorder;
-
-    recorder.ondataavailable = (event) => {
-      if (event.data.size > 0) state.recordedChunks.push(event.data);
-    };
-
-    recorder.onstop = async () => {
-      const blob = new Blob(state.recordedChunks, { type: "audio/webm" });
-      const file = new File([blob], `voice-${Date.now()}.webm`, { type: "audio/webm" });
-      await sendMediaFile(file);
-      stream.getTracks().forEach((track) => track.stop());
-    };
-
-    recorder.start();
-    state.isRecording = true;
-    btn.textContent = "⏹";
-  } catch {
-    showToast("Не удалось включить микрофон", true);
-  }
-}
-
-async function createGroup() {
-  try {
-    const name = $("newGroupName").value.trim();
-    const description = $("newGroupDescription").value.trim();
-
-    if (!name) {
-      showToast("Напиши название группы", true);
-      return;
-    }
-
-    const data = await api("/groups", {
-      method: "POST",
-      body: JSON.stringify({ name, description })
-    });
-
-    showToast(data.message || "Группа создана");
-    $("newGroupName").value = "";
-    $("newGroupDescription").value = "";
-    await loadGroups();
-  } catch (err) {
-    showToast(err.message, true);
-  }
-}
-
-async function openGroupManager() {
-  if (!state.currentGroup) return;
-
-  try {
-    const group = await api("/groups/" + state.currentGroup.id);
-    const members = await api("/groups/" + state.currentGroup.id + "/members");
-
-    $("groupNameInput").value = group.name || "";
-    $("groupDescriptionInput").value = group.description || "";
-
-    const membersList = $("groupMembersList");
-    membersList.innerHTML = "";
-
-    members.forEach((member) => {
-      const item = document.createElement("div");
-      item.className = "list-item";
-
-      let controls = "";
-      if ((group.myRole === "owner" || group.myRole === "admin") && member.role !== "owner") {
-        controls = `
-          <div class="item-actions">
-            <button class="ghost-btn role-btn" data-handle="${escapeHtml(member.handle)}" data-role="admin" type="button">Сделать админом</button>
-            <button class="ghost-btn role-btn" data-handle="${escapeHtml(member.handle)}" data-role="member" type="button">Сделать участником</button>
+    <main class="chat-main">
+      <header class="chat-header">
+        <div class="chat-header-left">
+          <button id="openSidebarBtn" class="ghost-btn mobile-only" type="button">☰</button>
+          <div>
+            <div id="chatTitle" class="chat-title">Выберите чат</div>
+            <div id="chatSubtitle" class="chat-subtitle">Личные сообщения и группы</div>
           </div>
-        `;
-      }
+        </div>
 
-      const shownName = `${fullName(member)}${member.profileSticker ? " " + member.profileSticker : ""}`;
+        <button id="manageGroupBtn" class="ghost-btn hidden" type="button">Управление группой</button>
+      </header>
 
-      item.innerHTML = `
-        <div class="list-title">${escapeHtml(shownName)} (@${escapeHtml(member.handle)})</div>
-        <div class="list-subtitle">${escapeHtml(member.role)}</div>
-        <div class="list-subtitle">${member.birthDate ? "🎂 " + escapeHtml(member.birthDate) : ""}</div>
-        ${controls}
-      `;
-      membersList.appendChild(item);
-    });
+      <section id="messages" class="messages-area">
+        <div class="empty-state">Выберите личный чат или группу ✨</div>
+      </section>
 
-    membersList.querySelectorAll(".role-btn").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        try {
-          const data = await api("/groups/" + state.currentGroup.id + "/role", {
-            method: "POST",
-            body: JSON.stringify({
-              handle: btn.dataset.handle,
-              role: btn.dataset.role
-            })
-          });
+      <footer class="composer">
+        <input id="messageInput" placeholder="Напишите сообщение..." />
+        <input id="fileInput" type="file" accept="image/*,video/*" class="hidden" />
+        <button id="attachBtn" class="ghost-btn" type="button">📎</button>
+        <button id="recordVoiceBtn" class="ghost-btn" type="button">🎙</button>
+        <button id="sendBtn" class="primary-btn" type="button">Отправить</button>
+      </footer>
+    </main>
+  </div>
 
-          showToast(data.message || "Роль изменена");
-          openGroupManager();
-          loadGroups();
-        } catch (err) {
-          showToast(err.message, true);
-        }
-      });
-    });
+  <div id="profileModal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Редактировать профиль</h3>
+        <button id="closeProfileBtn" class="ghost-btn" type="button">✕</button>
+      </div>
 
-    openModal("groupModal");
-  } catch (err) {
-    showToast(err.message, true);
-  }
-}
+      <div class="form-stack">
+        <input id="profileNameInput" placeholder="Отображаемое имя" />
+        <input id="profileHandleInput" placeholder="Юзернейм" />
+        <input id="firstNameInput" placeholder="Имя" />
+        <input id="lastNameInput" placeholder="Фамилия" />
+        <input id="middleNameInput" placeholder="Отчество" />
+        <input id="birthDateInput" type="date" />
+        <input id="profileStickerInput" placeholder="Стикер-статус, например 😎" />
+        <textarea id="profileBioInput" rows="4" placeholder="О себе"></textarea>
+        <button id="saveProfileBtn" class="primary-btn full-btn" type="button">Сохранить</button>
+      </div>
+    </div>
+  </div>
 
-async function saveGroup() {
-  if (!state.currentGroup) return;
+  <div id="groupModal" class="modal hidden">
+    <div class="modal-card modal-wide">
+      <div class="modal-header">
+        <h3>Управление группой</h3>
+        <button id="closeGroupBtn" class="ghost-btn" type="button">✕</button>
+      </div>
 
-  try {
-    const name = $("groupNameInput").value.trim();
-    const description = $("groupDescriptionInput").value.trim();
+      <div class="form-stack">
+        <input id="groupNameInput" placeholder="Название группы" />
+        <textarea id="groupDescriptionInput" rows="3" placeholder="Описание группы"></textarea>
+        <button id="saveGroupBtn" class="primary-btn full-btn" type="button">Сохранить группу</button>
 
-    const data = await api("/groups/" + state.currentGroup.id, {
-      method: "PUT",
-      body: JSON.stringify({ name, description })
-    });
+        <div class="divider"></div>
 
-    showToast(data.message || "Группа обновлена");
-    closeModal("groupModal");
-    await loadGroups();
-    await openGroupChat({ ...state.currentGroup, name, description });
-  } catch (err) {
-    showToast(err.message, true);
-  }
-}
+        <div class="panel-title">Добавить участника</div>
+        <div class="search-row">
+          <input id="groupMemberHandleInput" placeholder="@username" />
+          <button id="addGroupMemberBtn" class="primary-btn" type="button">Добавить</button>
+        </div>
 
-async function addMemberToGroup() {
-  if (!state.currentGroup) return;
+        <div class="panel-title">Участники</div>
+        <div id="groupMembersList" class="list-stack"></div>
+      </div>
+    </div>
+  </div>
 
-  try {
-    const handle = normalizeHandle($("groupMemberHandleInput").value);
+  <nav class="bottom-nav">
+    <button id="navChatsBtn" class="bottom-nav-btn active" type="button">
+      <span>💬</span>
+      <small>Чаты</small>
+    </button>
+    <button id="navGroupsBtn" class="bottom-nav-btn" type="button">
+      <span>👥</span>
+      <small>Группы</small>
+    </button>
+    <button id="navProfileBtn" class="bottom-nav-btn" type="button">
+      <span>🙍</span>
+      <small>Профиль</small>
+    </button>
+    <button id="navMenuBtn" class="bottom-nav-btn" type="button">
+      <span>⚙️</span>
+      <small>Меню</small>
+    </button>
+  </nav>
 
-    if (!handle) {
-      showToast("Введи юзернейм", true);
-      return;
-    }
-
-    const data = await api("/groups/" + state.currentGroup.id + "/members", {
-      method: "POST",
-      body: JSON.stringify({ handle })
-    });
-
-    showToast(data.message || "Участник добавлен");
-    $("groupMemberHandleInput").value = "";
-    openGroupManager();
-  } catch (err) {
-    showToast(err.message, true);
-  }
-}
-
-function setupBottomNav() {
-  const chatsBtn = $("navChatsBtn");
-  const groupsBtn = $("navGroupsBtn");
-  const profileBtn = $("navProfileBtn");
-  const menuBtn = $("navMenuBtn");
-
-  const profileSection = $("profileSection");
-  const chatsSection = $("chatsSection");
-  const groupsSection = $("groupsSection");
-  const topAnchor = $("sidebarTopAnchor");
-
-  function setActive(btn) {
-    [chatsBtn, groupsBtn, profileBtn, menuBtn].forEach((b) => b?.classList.remove("active"));
-    btn?.classList.add("active");
-  }
-
-  chatsBtn?.addEventListener("click", () => {
-    setActive(chatsBtn);
-    chatsSection?.scrollIntoView({ behavior: "smooth", block: "start" });
-  });
-
-  groupsBtn?.addEventListener("click", () => {
-    setActive(groupsBtn);
-    groupsSection?.scrollIntoView({ behavior: "smooth", block: "start" });
-  });
-
-  profileBtn?.addEventListener("click", () => {
-    setActive(profileBtn);
-    profileSection?.scrollIntoView({ behavior: "smooth", block: "start" });
-  });
-
-  menuBtn?.addEventListener("click", () => {
-    setActive(menuBtn);
-    topAnchor?.scrollIntoView({ behavior: "smooth", block: "start" });
-  });
-}
-
-async function initChatPage() {
-  if (!state.token) {
-    window.location.href = "index.html";
-    return;
-  }
-
-  try {
-    await loadProfile();
-    await loadPrivateChats();
-    await loadGroups();
-    connectSocket();
-    setupBottomNav();
-
-    $("logoutBtn")?.addEventListener("click", logout);
-    $("friendSearchBtn")?.addEventListener("click", searchUsers);
-    $("createGroupBtn")?.addEventListener("click", createGroup);
-    $("sendBtn")?.addEventListener("click", sendMessage);
-    $("messageInput")?.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") sendMessage();
-    });
-
-    $("attachBtn")?.addEventListener("click", () => $("fileInput").click());
-    $("fileInput")?.addEventListener("change", async (e) => {
-      const file = e.target.files[0];
-      if (file) await sendMediaFile(file);
-      e.target.value = "";
-    });
-
-    $("recordVoiceBtn")?.addEventListener("click", toggleVoiceRecording);
-
-    $("openProfileBtn")?.addEventListener("click", () => openModal("profileModal"));
-    $("closeProfileBtn")?.addEventListener("click", () => closeModal("profileModal"));
-    $("saveProfileBtn")?.addEventListener("click", saveProfile);
-
-    $("manageGroupBtn")?.addEventListener("click", openGroupManager);
-    $("closeGroupBtn")?.addEventListener("click", () => closeModal("groupModal"));
-    $("saveGroupBtn")?.addEventListener("click", saveGroup);
-    $("addGroupMemberBtn")?.addEventListener("click", addMemberToGroup);
-
-    $("openSidebarBtn")?.addEventListener("click", () => toggleSidebar(true));
-    $("closeSidebarBtn")?.addEventListener("click", () => toggleSidebar(false));
-  } catch (err) {
-    showToast(err.message, true);
-    if (String(err.message).toLowerCase().includes("токен")) {
-      logout();
-    }
-  }
-}
-
-document.addEventListener("DOMContentLoaded", () => {
-  if (isChatPage) {
-    initChatPage();
-  } else {
-    initAuthPage();
-  }
-});
+  <div id="toast" class="toast"></div>
+  <script src="app.js"></script>
+</body>
+</html>
