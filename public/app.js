@@ -36,6 +36,19 @@ function normalizeHandle(value = "") {
   return String(value).trim().replace(/^@+/, "").toLowerCase();
 }
 
+function escapeHtml(text = "") {
+  return String(text)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function fullName(user) {
+  return [user.lastName, user.firstName, user.middleName].filter(Boolean).join(" ").trim() || user.displayName || "Пользователь";
+}
+
 async function api(url, options = {}) {
   const headers = { ...(options.headers || {}) };
 
@@ -63,6 +76,8 @@ function switchAuth(mode) {
   $("tabLogin").classList.toggle("active", mode === "login");
   $("tabRegister").classList.toggle("active", mode === "register");
 }
+
+/* AUTH */
 
 async function login() {
   try {
@@ -132,6 +147,8 @@ function initAuthPage() {
   });
 }
 
+/* CHAT */
+
 function logout() {
   localStorage.removeItem("token");
   state.token = null;
@@ -150,11 +167,8 @@ function toggleSidebar(force) {
   const sidebar = $("sidebar");
   if (!sidebar) return;
 
-  if (typeof force === "boolean") {
-    sidebar.classList.toggle("open", force);
-  } else {
-    sidebar.classList.toggle("open");
-  }
+  if (typeof force === "boolean") sidebar.classList.toggle("open", force);
+  else sidebar.classList.toggle("open");
 }
 
 function setChatHeader(title, subtitle) {
@@ -167,15 +181,6 @@ function formatTime(ts) {
     hour: "2-digit",
     minute: "2-digit"
   });
-}
-
-function escapeHtml(text = "") {
-  return String(text)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
 }
 
 function fileToBase64(file) {
@@ -204,8 +209,7 @@ function renderMedia(msg) {
 }
 
 function renderMessage(msg) {
-  const myHandle = state.me?.handle;
-  const mine = msg.senderHandle === myHandle;
+  const mine = msg.senderHandle === state.me?.handle;
 
   const row = document.createElement("div");
   row.className = `message-row ${mine ? "mine" : "other"}`;
@@ -232,13 +236,22 @@ async function loadProfile() {
   const me = await api("/me");
   state.me = me;
 
-  $("selfName").textContent = me.displayName || "Пользователь";
+  const shownName = `${fullName(me)}${me.profileSticker ? " " + me.profileSticker : ""}`;
+  $("selfName").textContent = shownName;
   $("selfHandle").textContent = "@" + (me.handle || "username");
-  $("selfBio").textContent = me.bio || "Без описания";
+
+  let bioText = me.bio || "Без описания";
+  if (me.birthDate) bioText += ` • 🎂 ${me.birthDate}`;
+  $("selfBio").textContent = bioText;
 
   $("profileNameInput").value = me.displayName || "";
   $("profileHandleInput").value = me.handle || "";
   $("profileBioInput").value = me.bio || "";
+  $("firstNameInput").value = me.firstName || "";
+  $("lastNameInput").value = me.lastName || "";
+  $("middleNameInput").value = me.middleName || "";
+  $("birthDateInput").value = me.birthDate || "";
+  $("profileStickerInput").value = me.profileSticker || "";
 }
 
 async function saveProfile() {
@@ -246,10 +259,24 @@ async function saveProfile() {
     const displayName = $("profileNameInput").value.trim();
     const handle = normalizeHandle($("profileHandleInput").value);
     const bio = $("profileBioInput").value.trim();
+    const firstName = $("firstNameInput").value.trim();
+    const lastName = $("lastNameInput").value.trim();
+    const middleName = $("middleNameInput").value.trim();
+    const birthDate = $("birthDateInput").value.trim();
+    const profileSticker = $("profileStickerInput").value.trim();
 
     const data = await api("/me", {
       method: "PUT",
-      body: JSON.stringify({ displayName, handle, bio })
+      body: JSON.stringify({
+        displayName,
+        handle,
+        bio,
+        firstName,
+        lastName,
+        middleName,
+        birthDate,
+        profileSticker
+      })
     });
 
     if (data.token) {
@@ -260,7 +287,7 @@ async function saveProfile() {
     showToast(data.message || "Профиль сохранён");
     closeModal("profileModal");
     await loadProfile();
-    await loadFriends();
+    await loadPrivateChats();
 
     if (state.ws) {
       try {
@@ -294,10 +321,14 @@ async function searchUsers() {
     users.forEach((user) => {
       const item = document.createElement("div");
       item.className = "list-item";
+
+      const shownName = `${fullName(user)}${user.profileSticker ? " " + user.profileSticker : ""}`;
+
       item.innerHTML = `
-        <div class="list-title">${escapeHtml(user.displayName)}</div>
+        <div class="list-title">${escapeHtml(shownName)}</div>
         <div class="list-subtitle">@${escapeHtml(user.handle)}</div>
         <div class="list-subtitle">${escapeHtml(user.bio || "Без описания")}</div>
+        <div class="list-subtitle">${user.birthDate ? "🎂 " + escapeHtml(user.birthDate) : ""}</div>
         <div class="item-actions">
           <button class="primary-btn add-friend-btn" data-handle="${escapeHtml(user.handle)}" type="button">Добавить</button>
         </div>
@@ -315,7 +346,7 @@ async function searchUsers() {
           showToast(data.message || "Друг добавлен");
           $("friendSearchInput").value = "";
           results.innerHTML = "";
-          await loadFriends();
+          await loadPrivateChats();
         } catch (err) {
           showToast(err.message, true);
         }
@@ -326,26 +357,38 @@ async function searchUsers() {
   }
 }
 
-async function loadFriends() {
-  const list = $("friendsList");
+async function loadPrivateChats() {
+  const list = $("privateChatsList");
   list.innerHTML = "";
 
-  const friends = await api("/friends");
+  const chats = await api("/private-chats");
 
-  if (!friends.length) {
-    list.innerHTML = `<div class="list-item">Пока нет друзей</div>`;
+  if (!chats.length) {
+    list.innerHTML = `<div class="list-item">Пока нет личных чатов</div>`;
     return;
   }
 
-  friends.forEach((friend) => {
+  chats.forEach((chat) => {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "list-item-button";
+
+    let preview = "Нет сообщений";
+    if (chat.lastMessageType === "image") preview = "📷 Фото";
+    else if (chat.lastMessageType === "video") preview = "🎬 Видео";
+    else if (chat.lastMessageType === "audio") preview = "🎙 Голосовое";
+    else if (chat.lastMessageText) preview = chat.lastMessageText;
+
+    const shownName = `${fullName(chat)}${chat.profileSticker ? " " + chat.profileSticker : ""}`;
+
     btn.innerHTML = `
-      <div class="list-title">${escapeHtml(friend.displayName)}</div>
-      <div class="list-subtitle">@${escapeHtml(friend.handle)}</div>
+      <div class="list-title">${escapeHtml(shownName)}</div>
+      <div class="list-subtitle">@${escapeHtml(chat.handle)}</div>
+      <div class="list-subtitle">${chat.birthDate ? "🎂 " + escapeHtml(chat.birthDate) : ""}</div>
+      <div class="list-subtitle">${escapeHtml(preview)}</div>
     `;
-    btn.addEventListener("click", () => openPrivateChat(friend));
+
+    btn.addEventListener("click", () => openPrivateChat(chat));
     list.appendChild(btn);
   });
 }
@@ -383,7 +426,11 @@ async function openPrivateChat(friend) {
   state.currentGroup = null;
 
   $("manageGroupBtn").classList.add("hidden");
-  setChatHeader(friend.displayName, "@" + friend.handle);
+
+  const shownName = `${fullName(friend)}${friend.profileSticker ? " " + friend.profileSticker : ""}`;
+  const subtitle = friend.birthDate ? `@${friend.handle} • 🎂 ${friend.birthDate}` : `@${friend.handle}`;
+
+  setChatHeader(shownName, subtitle);
 
   const msgs = await api("/messages/private/" + encodeURIComponent(friend.handle));
   const box = $("messages");
@@ -449,7 +496,7 @@ function connectSocket() {
         $("messages").appendChild(renderMessage(data));
         scrollMessages();
       }
-      loadFriends();
+      loadPrivateChats();
     }
 
     if (data.type === "groupMessage") {
@@ -493,16 +540,6 @@ function sendMessage() {
       text,
       mediaType: "text"
     }));
-
-    $("messages").appendChild(
-      renderMessage({
-        senderHandle: state.me.handle,
-        senderName: state.me.displayName,
-        text,
-        createdAt: Date.now(),
-        mediaType: "text"
-      })
-    );
   }
 
   if (state.currentChat.type === "group") {
@@ -515,7 +552,6 @@ function sendMessage() {
   }
 
   input.value = "";
-  scrollMessages();
 }
 
 async function sendMediaFile(file) {
@@ -550,7 +586,7 @@ async function sendMediaFile(file) {
         mediaBase64: base64
       }));
     }
-  } catch (err) {
+  } catch {
     showToast("Ошибка отправки файла", true);
   }
 }
@@ -578,9 +614,7 @@ async function toggleVoiceRecording() {
     state.mediaRecorder = recorder;
 
     recorder.ondataavailable = (event) => {
-      if (event.data.size > 0) {
-        state.recordedChunks.push(event.data);
-      }
+      if (event.data.size > 0) state.recordedChunks.push(event.data);
     };
 
     recorder.onstop = async () => {
@@ -593,7 +627,7 @@ async function toggleVoiceRecording() {
     recorder.start();
     state.isRecording = true;
     btn.textContent = "⏹";
-  } catch (err) {
+  } catch {
     showToast("Не удалось включить микрофон", true);
   }
 }
@@ -649,9 +683,12 @@ async function openGroupManager() {
         `;
       }
 
+      const shownName = `${fullName(member)}${member.profileSticker ? " " + member.profileSticker : ""}`;
+
       item.innerHTML = `
-        <div class="list-title">${escapeHtml(member.displayName)} (@${escapeHtml(member.handle)})</div>
+        <div class="list-title">${escapeHtml(shownName)} (@${escapeHtml(member.handle)})</div>
         <div class="list-subtitle">${escapeHtml(member.role)}</div>
+        <div class="list-subtitle">${member.birthDate ? "🎂 " + escapeHtml(member.birthDate) : ""}</div>
         ${controls}
       `;
       membersList.appendChild(item);
@@ -728,6 +765,43 @@ async function addMemberToGroup() {
   }
 }
 
+function setupBottomNav() {
+  const chatsBtn = $("navChatsBtn");
+  const groupsBtn = $("navGroupsBtn");
+  const profileBtn = $("navProfileBtn");
+  const menuBtn = $("navMenuBtn");
+
+  const profileSection = $("profileSection");
+  const chatsSection = $("chatsSection");
+  const groupsSection = $("groupsSection");
+  const topAnchor = $("sidebarTopAnchor");
+
+  function setActive(btn) {
+    [chatsBtn, groupsBtn, profileBtn, menuBtn].forEach((b) => b?.classList.remove("active"));
+    btn?.classList.add("active");
+  }
+
+  chatsBtn?.addEventListener("click", () => {
+    setActive(chatsBtn);
+    chatsSection?.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+
+  groupsBtn?.addEventListener("click", () => {
+    setActive(groupsBtn);
+    groupsSection?.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+
+  profileBtn?.addEventListener("click", () => {
+    setActive(profileBtn);
+    profileSection?.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+
+  menuBtn?.addEventListener("click", () => {
+    setActive(menuBtn);
+    topAnchor?.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+}
+
 async function initChatPage() {
   if (!state.token) {
     window.location.href = "index.html";
@@ -736,9 +810,10 @@ async function initChatPage() {
 
   try {
     await loadProfile();
-    await loadFriends();
+    await loadPrivateChats();
     await loadGroups();
     connectSocket();
+    setupBottomNav();
 
     $("logoutBtn")?.addEventListener("click", logout);
     $("friendSearchBtn")?.addEventListener("click", searchUsers);
