@@ -3,49 +3,69 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>OneMessenger</title>
+  <title>One Messenger</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body class="auth-page">
-  <div class="auth-layout">
-    <section class="auth-hero">
-      <div class="hero-badge">OneMessenger</div>
+  <div class="auth-shell">
+    <section class="auth-left">
+      <div class="brand-badge">One Messenger</div>
       <h1>Мессенджер без номера телефона</h1>
       <p>
-        Вход по юзернейму, группы, админы, владелец, бан-лист слов,
-        блокировка нарушителей и аккуратный интерфейс для телефона, планшета и компьютера.
+        Вход по юзернейму, личные чаты, группы, роли и аккуратный интерфейс
+        для телефона, планшета и компьютера.
       </p>
     </section>
 
     <section class="auth-card">
       <div class="auth-tabs">
-        <button id="tabLogin" class="tab active" type="button">Вход</button>
-        <button id="tabRegister" class="tab" type="button">Регистрация</button>
+        <button id="tabLogin" class="tab-btn active" type="button">Вход</button>
+        <button id="tabRegister" class="tab-btn" type="button">Регистрация</button>
       </div>
 
       <div id="loginView" class="auth-view active">
         <h2>Войти</h2>
         <p class="muted">
           Нет аккаунта?
-          <button id="goRegister" class="link-btn" type="button">Создать аккаунт</button>
+          <button id="showRegisterLink" class="link-btn" type="button">Создать аккаунт</button>
         </p>
 
-        <input id="loginIdentifier" placeholder="Юзернейм или имя" />
-        <input id="loginPassword" type="password" placeholder="Пароль" />
-        <button id="loginBtn" class="primary-btn full" type="button">Войти</button>
+        <div class="field-group">
+          <label>Юзернейм или имя</label>
+          <input id="loginIdentifier" placeholder="asadbek000" />
+        </div>
+
+        <div class="field-group">
+          <label>Пароль</label>
+          <input id="loginPassword" type="password" placeholder="Введите пароль" />
+        </div>
+
+        <button id="loginBtn" class="primary-btn full-btn" type="button">Войти</button>
       </div>
 
       <div id="registerView" class="auth-view">
         <h2>Создать аккаунт</h2>
         <p class="muted">
           Уже есть аккаунт?
-          <button id="goLogin" class="link-btn" type="button">Войти</button>
+          <button id="showLoginLink" class="link-btn" type="button">Войти</button>
         </p>
 
-        <input id="registerName" placeholder="Ваше имя" />
-        <input id="registerHandle" placeholder="Юзернейм, например asadbek_01" />
-        <input id="registerPassword" type="password" placeholder="Пароль" />
-        <button id="registerBtn" class="primary-btn full" type="button">Создать аккаунт</button>
+        <div class="field-group">
+          <label>Имя</label>
+          <input id="registerName" placeholder="Asadbek" />
+        </div>
+
+        <div class="field-group">
+          <label>Юзернейм</label>
+          <input id="registerHandle" placeholder="asadbek000" />
+        </div>
+
+        <div class="field-group">
+          <label>Пароль</label>
+          <input id="registerPassword" type="password" placeholder="Минимум 4 символа" />
+        </div>
+
+        <button id="registerBtn" class="primary-btn full-btn" type="button">Создать аккаунт</button>
       </div>
     </section>
   </div>
