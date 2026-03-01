@@ -1,954 +1,860 @@
-const express = require("express");
-const http = require("http");
-const WebSocket = require("ws");
-const Database = require("better-sqlite3");
-const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
-const path = require("path");
-const fs = require("fs");
+const isChatPage = location.pathname.includes("chat");
 
-const app = express();
-app.use(express.json({ limit: "50mb" }));
-app.use(express.static(path.join(__dirname, "public")));
+const state = {
+  currentChat: null,
+  currentGroup: null,
+  ws: null,
+  me: null,
+  token: localStorage.getItem("token"),
+  mediaRecorder: null,
+  recordedChunks: [],
+  isRecording: false
+};
 
-const uploadsDir = path.join(__dirname, "public", "uploads");
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
+function $(id) {
+  return document.getElementById(id);
 }
 
-const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
-
-const PORT = process.env.PORT || 3000;
-const SECRET = process.env.JWT_SECRET || "SuperSecretKey";
-
-const db = new Database("messenger.db");
-
-db.exec(`
-CREATE TABLE IF NOT EXISTS users (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  username TEXT UNIQUE,
-  password TEXT
-);
-
-CREATE TABLE IF NOT EXISTS friends (
-  user1 TEXT,
-  user2 TEXT
-);
-
-CREATE TABLE IF NOT EXISTS messages (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user1 TEXT,
-  user2 TEXT,
-  sender TEXT,
-  text TEXT,
-  createdAt INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS groups_table (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL,
-  description TEXT DEFAULT '',
-  ownerHandle TEXT NOT NULL,
-  createdAt INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS group_members (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  groupId INTEGER NOT NULL,
-  userHandle TEXT NOT NULL,
-  role TEXT NOT NULL DEFAULT 'member'
-);
-`);
-
-function safeAlter(sql) {
-  try {
-    db.exec(sql);
-  } catch (err) {
-    console.log("Migration skipped:", err.message);
+function showToast(text, isError = false) {
+  const toast = $("toast");
+  if (!toast) {
+    alert(text);
+    return;
   }
+
+  toast.textContent = text;
+  toast.style.color = isError ? "#e14b4b" : "";
+  toast.classList.add("show");
+
+  setTimeout(() => {
+    toast.classList.remove("show");
+    toast.style.color = "";
+  }, 2600);
 }
-
-safeAlter(`ALTER TABLE users ADD COLUMN displayName TEXT`);
-safeAlter(`ALTER TABLE users ADD COLUMN handle TEXT`);
-safeAlter(`ALTER TABLE users ADD COLUMN bio TEXT DEFAULT ''`);
-safeAlter(`ALTER TABLE users ADD COLUMN blockedUntil INTEGER DEFAULT 0`);
-safeAlter(`ALTER TABLE users ADD COLUMN strikes INTEGER DEFAULT 0`);
-safeAlter(`ALTER TABLE users ADD COLUMN firstName TEXT DEFAULT ''`);
-safeAlter(`ALTER TABLE users ADD COLUMN lastName TEXT DEFAULT ''`);
-safeAlter(`ALTER TABLE users ADD COLUMN middleName TEXT DEFAULT ''`);
-safeAlter(`ALTER TABLE users ADD COLUMN birthDate TEXT DEFAULT ''`);
-safeAlter(`ALTER TABLE users ADD COLUMN profileSticker TEXT DEFAULT ''`);
-
-safeAlter(`ALTER TABLE messages ADD COLUMN chatType TEXT DEFAULT 'private'`);
-safeAlter(`ALTER TABLE messages ADD COLUMN groupId INTEGER`);
-safeAlter(`ALTER TABLE messages ADD COLUMN mediaType TEXT DEFAULT 'text'`);
-safeAlter(`ALTER TABLE messages ADD COLUMN mediaUrl TEXT`);
-
-safeAlter(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_handle_unique ON users(handle)`);
-
-db.prepare(`
-  UPDATE users
-  SET displayName = COALESCE(displayName, username)
-`).run();
-
-const usersWithoutHandle = db.prepare(`
-  SELECT id, username FROM users WHERE handle IS NULL OR handle = ''
-`).all();
-
-for (const user of usersWithoutHandle) {
-  const fallbackHandle = String(user.username || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_]/g, "_") || `user_${user.id}`;
-
-  db.prepare(`UPDATE users SET handle = ? WHERE id = ?`).run(fallbackHandle, user.id);
-}
-
-const bannedTerms = [
-  "терракт",
-  "теракт",
-  "террор",
-  "терроризм",
-  "terror",
-  "terrorism",
-  "бомба",
-  "взорву",
-  "убью",
-  "расстрел",
-  "экстремизм",
-  "extremism",
-  "суицид",
-  "самоубийство",
-  "мессенджер тупой",
-  "мессенджер глупый",
-  "мессенджер наглый",
-  "тупой мессенджер",
-  "глупый мессенджер",
-  "наглый мессенджер"
-];
 
 function normalizeHandle(value = "") {
   return String(value).trim().replace(/^@+/, "").toLowerCase();
 }
 
-function getUserByHandle(handle) {
-  return db.prepare(`
-    SELECT *
-    FROM users
-    WHERE handle = ?
-  `).get(normalizeHandle(handle));
+function escapeHtml(text = "") {
+  return String(text)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
-function getUserByIdentifier(identifier) {
-  const value = normalizeHandle(identifier);
-  return db.prepare(`
-    SELECT *
-    FROM users
-    WHERE lower(handle) = ?
-       OR lower(username) = ?
-       OR lower(displayName) = ?
-  `).get(value, value, value);
+function fullName(user) {
+  return [user.lastName, user.firstName, user.middleName].filter(Boolean).join(" ").trim() || user.displayName || "Пользователь";
 }
 
-function makeToken(user) {
-  return jwt.sign(
-    {
-      id: user.id,
-      handle: user.handle,
-      displayName: user.displayName
-    },
-    SECRET,
-    { expiresIn: "7d" }
-  );
-}
+async function api(url, options = {}) {
+  const headers = { ...(options.headers || {}) };
 
-function isBlocked(user) {
-  return Number(user.blockedUntil || 0) > Date.now();
-}
-
-function blockText(user) {
-  const until = Number(user.blockedUntil || 0);
-  const hours = Math.ceil((until - Date.now()) / (1000 * 60 * 60));
-  return `Аккаунт временно заблокирован. Осталось примерно ${hours} ч.`;
-}
-
-function verify(req, res, next) {
-  const auth = req.headers.authorization;
-  if (!auth) return res.status(401).json({ error: "Нет токена" });
-
-  try {
-    const decoded = jwt.verify(auth.split(" ")[1], SECRET);
-    const user = db.prepare(`SELECT * FROM users WHERE id = ?`).get(decoded.id);
-    if (!user) return res.status(401).json({ error: "Пользователь не найден" });
-
-    if (isBlocked(user)) {
-      return res.status(403).json({ error: blockText(user) });
-    }
-
-    req.user = user;
-    next();
-  } catch {
-    res.status(401).json({ error: "Неверный токен" });
-  }
-}
-
-function moderateMessage(userHandle, text) {
-  const lowered = String(text || "").toLowerCase();
-  const found = bannedTerms.find((term) => lowered.includes(term));
-
-  if (!found) return { ok: true };
-
-  const user = getUserByHandle(userHandle);
-  const newStrikes = Number(user.strikes || 0) + 1;
-
-  if (newStrikes >= 3) {
-    const blockedUntil = Date.now() + 3 * 24 * 60 * 60 * 1000;
-    db.prepare(`
-      UPDATE users
-      SET strikes = 0, blockedUntil = ?
-      WHERE handle = ?
-    `).run(blockedUntil, userHandle);
-
-    return {
-      ok: false,
-      message: `Вы нарушили правила 3 раза. Аккаунт заблокирован на 3 дня. Причина: "${found}".`
-    };
+  if (!(options.body instanceof FormData) && !headers["Content-Type"]) {
+    headers["Content-Type"] = "application/json";
   }
 
-  db.prepare(`
-    UPDATE users
-    SET strikes = ?
-    WHERE handle = ?
-  `).run(newStrikes, userHandle);
-
-  return {
-    ok: false,
-    message: `Сообщение отклонено из-за запрещённого слова/фразы: "${found}". Нарушение ${newStrikes}/3.`
-  };
-}
-
-function areFriends(handle1, handle2) {
-  return !!db.prepare(`
-    SELECT 1 FROM friends WHERE user1 = ? AND user2 = ? LIMIT 1
-  `).get(handle1, handle2);
-}
-
-function getGroup(groupId) {
-  return db.prepare(`
-    SELECT * FROM groups_table WHERE id = ?
-  `).get(groupId);
-}
-
-function getGroupMember(groupId, handle) {
-  return db.prepare(`
-    SELECT * FROM group_members WHERE groupId = ? AND userHandle = ?
-  `).get(groupId, handle);
-}
-
-function canManageGroup(groupId, handle) {
-  const member = getGroupMember(groupId, handle);
-  return member && (member.role === "owner" || member.role === "admin");
-}
-
-function sendJson(ws, payload) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(payload));
+  if (state.token) {
+    headers.Authorization = "Bearer " + state.token;
   }
+
+  const response = await fetch(url, { ...options, headers });
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data.error || "Ошибка запроса");
+  }
+
+  return data;
 }
 
-function saveBase64Media(base64String, mediaType) {
-  if (!base64String || typeof base64String !== "string") return null;
-
-  const match = base64String.match(/^data:(.+);base64,(.+)$/);
-  if (!match) return null;
-
-  const mimeType = match[1];
-  const base64Data = match[2];
-
-  let ext = "bin";
-  if (mimeType.includes("jpeg")) ext = "jpg";
-  else if (mimeType.includes("jpg")) ext = "jpg";
-  else if (mimeType.includes("png")) ext = "png";
-  else if (mimeType.includes("gif")) ext = "gif";
-  else if (mimeType.includes("webp")) ext = "webp";
-  else if (mimeType.includes("mp4")) ext = "mp4";
-  else if (mimeType.includes("webm")) ext = "webm";
-  else if (mimeType.includes("ogg")) ext = "ogg";
-  else if (mimeType.includes("mpeg")) ext = "mp3";
-
-  const fileName = `${mediaType}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${ext}`;
-  const filePath = path.join(uploadsDir, fileName);
-
-  fs.writeFileSync(filePath, Buffer.from(base64Data, "base64"));
-
-  return `/uploads/${fileName}`;
+function switchAuth(mode) {
+  $("loginView").classList.toggle("active", mode === "login");
+  $("registerView").classList.toggle("active", mode === "register");
+  $("tabLogin").classList.toggle("active", mode === "login");
+  $("tabRegister").classList.toggle("active", mode === "register");
 }
 
 /* AUTH */
 
-app.post("/register", async (req, res) => {
-  const displayName = String(req.body.displayName || "").trim();
-  const handle = normalizeHandle(req.body.handle);
-  const password = String(req.body.password || "").trim();
+async function login() {
+  try {
+    const identifier = $("loginIdentifier").value.trim();
+    const password = $("loginPassword").value.trim();
 
-  if (!displayName || !handle || !password) {
-    return res.status(400).json({ error: "Заполни все поля" });
+    if (!identifier || !password) {
+      showToast("Заполни логин и пароль", true);
+      return;
+    }
+
+    const data = await api("/login", {
+      method: "POST",
+      body: JSON.stringify({ identifier, password })
+    });
+
+    state.token = data.token;
+    localStorage.setItem("token", data.token);
+    window.location.href = "chat.html";
+  } catch (err) {
+    showToast(err.message, true);
   }
+}
 
-  if (!/^[a-z0-9_]{4,20}$/.test(handle)) {
-    return res.status(400).json({ error: "Юзернейм: 4-20 символов, только буквы, цифры и _" });
+async function register() {
+  try {
+    const displayName = $("registerName").value.trim();
+    const handle = normalizeHandle($("registerHandle").value);
+    const password = $("registerPassword").value.trim();
+
+    if (!displayName || !handle || !password) {
+      showToast("Заполни все поля", true);
+      return;
+    }
+
+    const data = await api("/register", {
+      method: "POST",
+      body: JSON.stringify({ displayName, handle, password })
+    });
+
+    state.token = data.token;
+    localStorage.setItem("token", data.token);
+    window.location.href = "chat.html";
+  } catch (err) {
+    showToast(err.message, true);
   }
+}
 
-  if (password.length < 4) {
-    return res.status(400).json({ error: "Пароль слишком короткий" });
-  }
+function initAuthPage() {
+  $("tabLogin")?.addEventListener("click", () => switchAuth("login"));
+  $("tabRegister")?.addEventListener("click", () => switchAuth("register"));
+  $("showRegisterLink")?.addEventListener("click", () => switchAuth("register"));
+  $("showLoginLink")?.addEventListener("click", () => switchAuth("login"));
+  $("loginBtn")?.addEventListener("click", login);
+  $("registerBtn")?.addEventListener("click", register);
 
-  const exists = db.prepare(`SELECT id FROM users WHERE handle = ?`).get(handle);
-  if (exists) {
-    return res.status(400).json({ error: "Такой юзернейм уже занят" });
-  }
-
-  const hash = await bcrypt.hash(password, 10);
-
-  const result = db.prepare(`
-    INSERT INTO users (
-      username, password, displayName, handle, bio,
-      blockedUntil, strikes,
-      firstName, lastName, middleName, birthDate, profileSticker
-    )
-    VALUES (?, ?, ?, ?, '', 0, 0, '', '', '', '', '')
-  `).run(displayName, hash, displayName, handle);
-
-  const user = db.prepare(`SELECT * FROM users WHERE id = ?`).get(result.lastInsertRowid);
-
-  res.json({
-    ok: true,
-    token: makeToken(user)
+  ["loginIdentifier", "loginPassword"].forEach((id) => {
+    $(id)?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") login();
+    });
   });
-});
 
-app.post("/login", async (req, res) => {
-  const identifier = String(req.body.identifier || "").trim();
-  const password = String(req.body.password || "").trim();
-
-  const user = getUserByIdentifier(identifier);
-  if (!user) {
-    return res.status(400).json({ error: "Пользователь не найден" });
-  }
-
-  if (isBlocked(user)) {
-    return res.status(403).json({ error: blockText(user) });
-  }
-
-  const valid = await bcrypt.compare(password, user.password);
-  if (!valid) {
-    return res.status(400).json({ error: "Неверный пароль" });
-  }
-
-  res.json({ token: makeToken(user) });
-});
-
-/* PROFILE */
-
-app.get("/me", verify, (req, res) => {
-  res.json({
-    id: req.user.id,
-    displayName: req.user.displayName,
-    handle: req.user.handle,
-    bio: req.user.bio || "",
-    firstName: req.user.firstName || "",
-    lastName: req.user.lastName || "",
-    middleName: req.user.middleName || "",
-    birthDate: req.user.birthDate || "",
-    profileSticker: req.user.profileSticker || ""
+  ["registerName", "registerHandle", "registerPassword"].forEach((id) => {
+    $(id)?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") register();
+    });
   });
-});
+}
 
-app.put("/me", verify, (req, res) => {
-  const displayName = String(req.body.displayName || "").trim();
-  const handle = normalizeHandle(req.body.handle);
-  const bio = String(req.body.bio || "").trim().slice(0, 300);
+/* CHAT */
 
-  const firstName = String(req.body.firstName || "").trim().slice(0, 100);
-  const lastName = String(req.body.lastName || "").trim().slice(0, 100);
-  const middleName = String(req.body.middleName || "").trim().slice(0, 100);
-  const birthDate = String(req.body.birthDate || "").trim().slice(0, 20);
-  const profileSticker = String(req.body.profileSticker || "").trim().slice(0, 20);
+function logout() {
+  localStorage.removeItem("token");
+  state.token = null;
+  window.location.href = "index.html";
+}
 
-  if (!displayName || !handle) {
-    return res.status(400).json({ error: "Имя и юзернейм обязательны" });
+function openModal(id) {
+  $(id)?.classList.remove("hidden");
+}
+
+function closeModal(id) {
+  $(id)?.classList.add("hidden");
+}
+
+function toggleSidebar(force) {
+  const sidebar = $("sidebar");
+  if (!sidebar) return;
+
+  if (typeof force === "boolean") sidebar.classList.toggle("open", force);
+  else sidebar.classList.toggle("open");
+}
+
+function setChatHeader(title, subtitle) {
+  $("chatTitle").textContent = title;
+  $("chatSubtitle").textContent = subtitle;
+}
+
+function formatTime(ts) {
+  return new Date(ts).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function renderMedia(msg) {
+  if (msg.mediaType === "image" && msg.mediaUrl) {
+    return `<div class="message-media"><img src="${escapeHtml(msg.mediaUrl)}" alt="image"></div>`;
   }
 
-  if (!/^[a-z0-9_]{4,20}$/.test(handle)) {
-    return res.status(400).json({ error: "Некорректный юзернейм" });
+  if (msg.mediaType === "video" && msg.mediaUrl) {
+    return `<div class="message-media"><video controls src="${escapeHtml(msg.mediaUrl)}"></video></div>`;
   }
 
-  const existing = db.prepare(`
-    SELECT id FROM users WHERE handle = ? AND id != ?
-  `).get(handle, req.user.id);
-
-  if (existing) {
-    return res.status(400).json({ error: "Этот юзернейм уже занят" });
+  if (msg.mediaType === "audio" && msg.mediaUrl) {
+    return `<audio class="message-audio" controls src="${escapeHtml(msg.mediaUrl)}"></audio>`;
   }
 
-  db.prepare(`
-    UPDATE users
-    SET
-      displayName = ?,
-      handle = ?,
-      bio = ?,
-      firstName = ?,
-      lastName = ?,
-      middleName = ?,
-      birthDate = ?,
-      profileSticker = ?
-    WHERE id = ?
-  `).run(
-    displayName,
-    handle,
-    bio,
-    firstName,
-    lastName,
-    middleName,
-    birthDate,
-    profileSticker,
-    req.user.id
+  return "";
+}
+
+function renderMessage(msg) {
+  const mine = msg.senderHandle === state.me?.handle;
+
+  const row = document.createElement("div");
+  row.className = `message-row ${mine ? "mine" : "other"}`;
+
+  row.innerHTML = `
+    <div class="message-bubble">
+      <div class="message-meta">
+        ${mine ? "Вы" : escapeHtml(msg.senderName || msg.senderHandle)} • ${formatTime(msg.createdAt)}
+      </div>
+      ${msg.text ? `<div>${escapeHtml(msg.text)}</div>` : ""}
+      ${renderMedia(msg)}
+    </div>
+  `;
+
+  return row;
+}
+
+function scrollMessages() {
+  const box = $("messages");
+  if (box) box.scrollTop = box.scrollHeight;
+}
+
+async function loadProfile() {
+  const me = await api("/me");
+  state.me = me;
+
+  const shownName = `${fullName(me)}${me.profileSticker ? " " + me.profileSticker : ""}`;
+  $("selfName").textContent = shownName;
+  $("selfHandle").textContent = "@" + (me.handle || "username");
+
+  let bioText = me.bio || "Без описания";
+  if (me.birthDate) bioText += ` • 🎂 ${me.birthDate}`;
+  $("selfBio").textContent = bioText;
+
+  $("profileNameInput").value = me.displayName || "";
+  $("profileHandleInput").value = me.handle || "";
+  $("profileBioInput").value = me.bio || "";
+  $("firstNameInput").value = me.firstName || "";
+  $("lastNameInput").value = me.lastName || "";
+  $("middleNameInput").value = me.middleName || "";
+  $("birthDateInput").value = me.birthDate || "";
+  $("profileStickerInput").value = me.profileSticker || "";
+}
+
+async function saveProfile() {
+  try {
+    const displayName = $("profileNameInput").value.trim();
+    const handle = normalizeHandle($("profileHandleInput").value);
+    const bio = $("profileBioInput").value.trim();
+    const firstName = $("firstNameInput").value.trim();
+    const lastName = $("lastNameInput").value.trim();
+    const middleName = $("middleNameInput").value.trim();
+    const birthDate = $("birthDateInput").value.trim();
+    const profileSticker = $("profileStickerInput").value.trim();
+
+    const data = await api("/me", {
+      method: "PUT",
+      body: JSON.stringify({
+        displayName,
+        handle,
+        bio,
+        firstName,
+        lastName,
+        middleName,
+        birthDate,
+        profileSticker
+      })
+    });
+
+    if (data.token) {
+      state.token = data.token;
+      localStorage.setItem("token", data.token);
+    }
+
+    showToast(data.message || "Профиль сохранён");
+    closeModal("profileModal");
+    await loadProfile();
+    await loadPrivateChats();
+
+    if (state.ws) {
+      try {
+        state.ws.close();
+      } catch {}
+      connectSocket();
+    }
+  } catch (err) {
+    showToast(err.message, true);
+  }
+}
+
+async function searchUsers() {
+  try {
+    const q = normalizeHandle($("friendSearchInput").value);
+    const results = $("searchResults");
+    results.innerHTML = "";
+
+    if (!q) {
+      showToast("Введи юзернейм", true);
+      return;
+    }
+
+    const users = await api("/users/search?q=" + encodeURIComponent(q));
+
+    if (!users.length) {
+      results.innerHTML = `<div class="list-item">Никого не найдено</div>`;
+      return;
+    }
+
+    users.forEach((user) => {
+      const item = document.createElement("div");
+      item.className = "list-item";
+
+      const shownName = `${fullName(user)}${user.profileSticker ? " " + user.profileSticker : ""}`;
+
+      item.innerHTML = `
+        <div class="list-title">${escapeHtml(shownName)}</div>
+        <div class="list-subtitle">@${escapeHtml(user.handle)}</div>
+        <div class="list-subtitle">${escapeHtml(user.bio || "Без описания")}</div>
+        <div class="list-subtitle">${user.birthDate ? "🎂 " + escapeHtml(user.birthDate) : ""}</div>
+        <div class="item-actions">
+          <button class="primary-btn add-friend-btn" data-handle="${escapeHtml(user.handle)}" type="button">Добавить</button>
+        </div>
+      `;
+      results.appendChild(item);
+    });
+
+    results.querySelectorAll(".add-friend-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          const data = await api("/add-friend", {
+            method: "POST",
+            body: JSON.stringify({ handle: btn.dataset.handle })
+          });
+          showToast(data.message || "Друг добавлен");
+          $("friendSearchInput").value = "";
+          results.innerHTML = "";
+          await loadPrivateChats();
+        } catch (err) {
+          showToast(err.message, true);
+        }
+      });
+    });
+  } catch (err) {
+    showToast(err.message, true);
+  }
+}
+
+async function loadPrivateChats() {
+  const list = $("privateChatsList");
+  list.innerHTML = "";
+
+  const chats = await api("/private-chats");
+
+  if (!chats.length) {
+    list.innerHTML = `<div class="list-item">Пока нет личных чатов</div>`;
+    return;
+  }
+
+  chats.forEach((chat) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "list-item-button";
+
+    let preview = "Нет сообщений";
+    if (chat.lastMessageType === "image") preview = "📷 Фото";
+    else if (chat.lastMessageType === "video") preview = "🎬 Видео";
+    else if (chat.lastMessageType === "audio") preview = "🎙 Голосовое";
+    else if (chat.lastMessageText) preview = chat.lastMessageText;
+
+    const shownName = `${fullName(chat)}${chat.profileSticker ? " " + chat.profileSticker : ""}`;
+
+    btn.innerHTML = `
+      <div class="list-title">${escapeHtml(shownName)}</div>
+      <div class="list-subtitle">@${escapeHtml(chat.handle)}</div>
+      <div class="list-subtitle">${chat.birthDate ? "🎂 " + escapeHtml(chat.birthDate) : ""}</div>
+      <div class="list-subtitle">${escapeHtml(preview)}</div>
+    `;
+
+    btn.addEventListener("click", () => openPrivateChat(chat));
+    list.appendChild(btn);
+  });
+}
+
+async function loadGroups() {
+  const list = $("groupsList");
+  list.innerHTML = "";
+
+  const groups = await api("/groups");
+
+  if (!groups.length) {
+    list.innerHTML = `<div class="list-item">Пока нет групп</div>`;
+    return;
+  }
+
+  groups.forEach((group) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "list-item-button";
+    btn.innerHTML = `
+      <div class="list-title">${escapeHtml(group.name)}</div>
+      <div class="list-subtitle">${escapeHtml(group.role || "")}</div>
+      <div class="list-subtitle">${escapeHtml(group.description || "Без описания")}</div>
+    `;
+    btn.addEventListener("click", () => openGroupChat(group));
+    list.appendChild(btn);
+  });
+}
+
+async function openPrivateChat(friend) {
+  state.currentChat = {
+    type: "private",
+    handle: friend.handle
+  };
+  state.currentGroup = null;
+
+  $("manageGroupBtn").classList.add("hidden");
+
+  const shownName = `${fullName(friend)}${friend.profileSticker ? " " + friend.profileSticker : ""}`;
+  const subtitle = friend.birthDate ? `@${friend.handle} • 🎂 ${friend.birthDate}` : `@${friend.handle}`;
+
+  setChatHeader(shownName, subtitle);
+
+  const msgs = await api("/messages/private/" + encodeURIComponent(friend.handle));
+  const box = $("messages");
+  box.innerHTML = "";
+
+  if (!msgs.length) {
+    box.innerHTML = `<div class="empty-state">Начните диалог первым</div>`;
+    toggleSidebar(false);
+    return;
+  }
+
+  msgs.forEach((msg) => box.appendChild(renderMessage(msg)));
+  scrollMessages();
+  toggleSidebar(false);
+}
+
+async function openGroupChat(group) {
+  state.currentChat = {
+    type: "group",
+    id: group.id
+  };
+  state.currentGroup = group;
+
+  $("manageGroupBtn").classList.remove("hidden");
+  setChatHeader(group.name, group.description || group.role || "Группа");
+
+  const msgs = await api("/groups/" + group.id + "/messages");
+  const box = $("messages");
+  box.innerHTML = "";
+
+  if (!msgs.length) {
+    box.innerHTML = `<div class="empty-state">В этой группе пока нет сообщений</div>`;
+    toggleSidebar(false);
+    return;
+  }
+
+  msgs.forEach((msg) => box.appendChild(renderMessage(msg)));
+  scrollMessages();
+  toggleSidebar(false);
+}
+
+function connectSocket() {
+  if (!state.token) return;
+
+  state.ws = new WebSocket(
+    location.protocol === "https:"
+      ? "wss://" + location.host
+      : "ws://" + location.host
   );
 
-  db.prepare(`UPDATE friends SET user1 = ? WHERE user1 = ?`).run(handle, req.user.handle);
-  db.prepare(`UPDATE friends SET user2 = ? WHERE user2 = ?`).run(handle, req.user.handle);
-  db.prepare(`UPDATE messages SET user1 = ? WHERE user1 = ?`).run(handle, req.user.handle);
-  db.prepare(`UPDATE messages SET user2 = ? WHERE user2 = ?`).run(handle, req.user.handle);
-  db.prepare(`UPDATE messages SET sender = ? WHERE sender = ?`).run(handle, req.user.handle);
-  db.prepare(`UPDATE groups_table SET ownerHandle = ? WHERE ownerHandle = ?`).run(handle, req.user.handle);
-  db.prepare(`UPDATE group_members SET userHandle = ? WHERE userHandle = ?`).run(handle, req.user.handle);
+  state.ws.onopen = () => {
+    state.ws.send(JSON.stringify({ type: "join", token: state.token }));
+  };
 
-  const updated = db.prepare(`SELECT * FROM users WHERE id = ?`).get(req.user.id);
+  state.ws.onmessage = (event) => {
+    const data = JSON.parse(event.data);
 
-  res.json({
-    ok: true,
-    message: "Профиль обновлён",
-    token: makeToken(updated)
-  });
-});
+    if (data.type === "privateMessage") {
+      if (
+        state.currentChat?.type === "private" &&
+        (data.senderHandle === state.currentChat.handle || data.to === state.currentChat.handle)
+      ) {
+        $("messages").appendChild(renderMessage(data));
+        scrollMessages();
+      }
+      loadPrivateChats();
+    }
 
-/* USERS / FRIENDS / CHATS */
+    if (data.type === "groupMessage") {
+      if (
+        state.currentChat?.type === "group" &&
+        Number(state.currentChat.id) === Number(data.groupId)
+      ) {
+        $("messages").appendChild(renderMessage(data));
+        scrollMessages();
+      }
+      loadGroups();
+    }
 
-app.get("/users/search", verify, (req, res) => {
-  const q = normalizeHandle(req.query.q || "");
-  if (!q) return res.json([]);
+    if (data.type === "moderation") {
+      showToast(data.message, true);
+    }
+  };
 
-  const users = db.prepare(`
-    SELECT displayName, handle, bio, firstName, lastName, middleName, birthDate, profileSticker
-    FROM users
-    WHERE handle LIKE ?
-      AND handle != ?
-    ORDER BY handle ASC
-    LIMIT 10
-  `).all(`%${q}%`, req.user.handle);
+  state.ws.onclose = () => {
+    setTimeout(() => {
+      if (state.token) connectSocket();
+    }, 1500);
+  };
+}
 
-  res.json(users);
-});
+function sendMessage() {
+  const input = $("messageInput");
+  const text = input.value.trim();
 
-app.post("/add-friend", verify, (req, res) => {
-  const handle = normalizeHandle(req.body.handle);
-
-  if (!handle) return res.status(400).json({ error: "Юзернейм обязателен" });
-  if (handle === req.user.handle) return res.status(400).json({ error: "Нельзя добавить самого себя" });
-
-  const friend = getUserByHandle(handle);
-  if (!friend) return res.status(404).json({ error: "Пользователь не найден" });
-
-  if (areFriends(req.user.handle, handle)) {
-    return res.status(400).json({ error: "Уже в друзьях" });
+  if (!state.currentChat) {
+    showToast("Сначала выбери чат", true);
+    return;
   }
 
-  db.prepare(`INSERT INTO friends (user1, user2) VALUES (?, ?)`).run(req.user.handle, handle);
-  db.prepare(`INSERT INTO friends (user1, user2) VALUES (?, ?)`).run(handle, req.user.handle);
+  if (!text) return;
 
-  res.json({ ok: true, message: "Друг добавлен" });
-});
+  if (state.currentChat.type === "private") {
+    state.ws.send(JSON.stringify({
+      type: "privateMessage",
+      to: state.currentChat.handle,
+      text,
+      mediaType: "text"
+    }));
+  }
 
-app.get("/friends", verify, (req, res) => {
-  const friends = db.prepare(`
-    SELECT
-      u.displayName,
-      u.handle,
-      u.bio,
-      u.firstName,
-      u.lastName,
-      u.middleName,
-      u.birthDate,
-      u.profileSticker
-    FROM friends f
-    JOIN users u ON u.handle = f.user2
-    WHERE f.user1 = ?
-    ORDER BY u.displayName COLLATE NOCASE ASC
-  `).all(req.user.handle);
+  if (state.currentChat.type === "group") {
+    state.ws.send(JSON.stringify({
+      type: "groupMessage",
+      groupId: state.currentChat.id,
+      text,
+      mediaType: "text"
+    }));
+  }
 
-  res.json(friends);
-});
+  input.value = "";
+}
 
-app.get("/private-chats", verify, (req, res) => {
-  const handles = new Set();
+async function sendMediaFile(file) {
+  try {
+    if (!state.currentChat) {
+      showToast("Сначала выбери чат", true);
+      return;
+    }
 
-  const fromFriends = db.prepare(`
-    SELECT user2 AS handle
-    FROM friends
-    WHERE user1 = ?
-  `).all(req.user.handle);
+    const base64 = await fileToBase64(file);
 
-  fromFriends.forEach((row) => handles.add(row.handle));
+    let mediaType = "image";
+    if (file.type.startsWith("video/")) mediaType = "video";
+    if (file.type.startsWith("audio/")) mediaType = "audio";
 
-  const fromMessages = db.prepare(`
-    SELECT DISTINCT
-      CASE
-        WHEN user1 = ? THEN user2
-        ELSE user1
-      END AS handle
-    FROM messages
-    WHERE chatType = 'private'
-      AND (user1 = ? OR user2 = ?)
-      AND user1 IS NOT NULL
-      AND user2 IS NOT NULL
-  `).all(req.user.handle, req.user.handle, req.user.handle);
+    if (state.currentChat.type === "private") {
+      state.ws.send(JSON.stringify({
+        type: "privateMessage",
+        to: state.currentChat.handle,
+        text: "",
+        mediaType,
+        mediaBase64: base64
+      }));
+    }
 
-  fromMessages.forEach((row) => {
-    if (row.handle) handles.add(row.handle);
-  });
+    if (state.currentChat.type === "group") {
+      state.ws.send(JSON.stringify({
+        type: "groupMessage",
+        groupId: state.currentChat.id,
+        text: "",
+        mediaType,
+        mediaBase64: base64
+      }));
+    }
+  } catch {
+    showToast("Ошибка отправки файла", true);
+  }
+}
 
-  const result = [];
+async function toggleVoiceRecording() {
+  try {
+    if (!state.currentChat) {
+      showToast("Сначала выбери чат", true);
+      return;
+    }
 
-  for (const handle of handles) {
-    const user = db.prepare(`
-      SELECT displayName, handle, bio, firstName, lastName, middleName, birthDate, profileSticker
-      FROM users
-      WHERE handle = ?
-    `).get(handle);
+    const btn = $("recordVoiceBtn");
 
-    if (!user) continue;
+    if (state.isRecording && state.mediaRecorder) {
+      state.mediaRecorder.stop();
+      state.isRecording = false;
+      btn.textContent = "🎙";
+      return;
+    }
 
-    const lastMessage = db.prepare(`
-      SELECT text, createdAt, mediaType
-      FROM messages
-      WHERE chatType = 'private'
-        AND (
-          (user1 = ? AND user2 = ?)
-          OR
-          (user1 = ? AND user2 = ?)
-        )
-      ORDER BY createdAt DESC
-      LIMIT 1
-    `).get(req.user.handle, handle, handle, req.user.handle);
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    state.recordedChunks = [];
 
-    result.push({
-      displayName: user.displayName,
-      handle: user.handle,
-      bio: user.bio || "",
-      firstName: user.firstName || "",
-      lastName: user.lastName || "",
-      middleName: user.middleName || "",
-      birthDate: user.birthDate || "",
-      profileSticker: user.profileSticker || "",
-      lastMessageText: lastMessage?.text || "",
-      lastMessageType: lastMessage?.mediaType || "text",
-      lastMessageAt: lastMessage?.createdAt || 0
+    const recorder = new MediaRecorder(stream);
+    state.mediaRecorder = recorder;
+
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) state.recordedChunks.push(event.data);
+    };
+
+    recorder.onstop = async () => {
+      const blob = new Blob(state.recordedChunks, { type: "audio/webm" });
+      const file = new File([blob], `voice-${Date.now()}.webm`, { type: "audio/webm" });
+      await sendMediaFile(file);
+      stream.getTracks().forEach((track) => track.stop());
+    };
+
+    recorder.start();
+    state.isRecording = true;
+    btn.textContent = "⏹";
+  } catch {
+    showToast("Не удалось включить микрофон", true);
+  }
+}
+
+async function createGroup() {
+  try {
+    const name = $("newGroupName").value.trim();
+    const description = $("newGroupDescription").value.trim();
+
+    if (!name) {
+      showToast("Напиши название группы", true);
+      return;
+    }
+
+    const data = await api("/groups", {
+      method: "POST",
+      body: JSON.stringify({ name, description })
     });
+
+    showToast(data.message || "Группа создана");
+    $("newGroupName").value = "";
+    $("newGroupDescription").value = "";
+    await loadGroups();
+  } catch (err) {
+    showToast(err.message, true);
   }
+}
 
-  result.sort((a, b) => Number(b.lastMessageAt || 0) - Number(a.lastMessageAt || 0));
+async function openGroupManager() {
+  if (!state.currentGroup) return;
 
-  res.json(result);
-});
+  try {
+    const group = await api("/groups/" + state.currentGroup.id);
+    const members = await api("/groups/" + state.currentGroup.id + "/members");
 
-/* PRIVATE MESSAGES */
+    $("groupNameInput").value = group.name || "";
+    $("groupDescriptionInput").value = group.description || "";
 
-app.get("/messages/private/:handle", verify, (req, res) => {
-  const friendHandle = normalizeHandle(req.params.handle);
+    const membersList = $("groupMembersList");
+    membersList.innerHTML = "";
 
-  const messages = db.prepare(`
-    SELECT
-      m.id,
-      m.sender AS senderHandle,
-      u.displayName AS senderName,
-      m.text,
-      m.createdAt,
-      m.mediaType,
-      m.mediaUrl
-    FROM messages m
-    LEFT JOIN users u ON u.handle = m.sender
-    WHERE m.chatType = 'private'
-      AND (
-        (m.user1 = ? AND m.user2 = ?)
-        OR
-        (m.user1 = ? AND m.user2 = ?)
-      )
-    ORDER BY m.createdAt ASC
-  `).all(req.user.handle, friendHandle, friendHandle, req.user.handle);
+    members.forEach((member) => {
+      const item = document.createElement("div");
+      item.className = "list-item";
 
-  res.json(messages);
-});
-
-/* GROUPS */
-
-app.post("/groups", verify, (req, res) => {
-  const name = String(req.body.name || "").trim();
-  const description = String(req.body.description || "").trim().slice(0, 300);
-
-  if (!name) {
-    return res.status(400).json({ error: "Название группы обязательно" });
-  }
-
-  const result = db.prepare(`
-    INSERT INTO groups_table (name, description, ownerHandle, createdAt)
-    VALUES (?, ?, ?, ?)
-  `).run(name, description, req.user.handle, Date.now());
-
-  db.prepare(`
-    INSERT INTO group_members (groupId, userHandle, role)
-    VALUES (?, ?, 'owner')
-  `).run(result.lastInsertRowid, req.user.handle);
-
-  res.json({ ok: true, message: "Группа создана", groupId: result.lastInsertRowid });
-});
-
-app.get("/groups", verify, (req, res) => {
-  const groups = db.prepare(`
-    SELECT
-      g.id,
-      g.name,
-      g.description,
-      gm.role
-    FROM group_members gm
-    JOIN groups_table g ON g.id = gm.groupId
-    WHERE gm.userHandle = ?
-    ORDER BY g.createdAt DESC
-  `).all(req.user.handle);
-
-  res.json(groups);
-});
-
-app.get("/groups/:id", verify, (req, res) => {
-  const groupId = Number(req.params.id);
-  const group = getGroup(groupId);
-  const member = getGroupMember(groupId, req.user.handle);
-
-  if (!group || !member) {
-    return res.status(404).json({ error: "Группа не найдена" });
-  }
-
-  res.json({
-    id: group.id,
-    name: group.name,
-    description: group.description,
-    ownerHandle: group.ownerHandle,
-    myRole: member.role
-  });
-});
-
-app.put("/groups/:id", verify, (req, res) => {
-  const groupId = Number(req.params.id);
-  const name = String(req.body.name || "").trim();
-  const description = String(req.body.description || "").trim().slice(0, 300);
-
-  if (!canManageGroup(groupId, req.user.handle)) {
-    return res.status(403).json({ error: "Недостаточно прав" });
-  }
-
-  if (!name) {
-    return res.status(400).json({ error: "Название группы обязательно" });
-  }
-
-  db.prepare(`
-    UPDATE groups_table
-    SET name = ?, description = ?
-    WHERE id = ?
-  `).run(name, description, groupId);
-
-  res.json({ ok: true, message: "Группа обновлена" });
-});
-
-app.get("/groups/:id/members", verify, (req, res) => {
-  const groupId = Number(req.params.id);
-  const member = getGroupMember(groupId, req.user.handle);
-
-  if (!member) {
-    return res.status(403).json({ error: "Вы не состоите в группе" });
-  }
-
-  const members = db.prepare(`
-    SELECT gm.userHandle AS handle, gm.role, u.displayName, u.firstName, u.lastName, u.middleName, u.birthDate, u.profileSticker
-    FROM group_members gm
-    JOIN users u ON u.handle = gm.userHandle
-    WHERE gm.groupId = ?
-    ORDER BY
-      CASE gm.role
-        WHEN 'owner' THEN 1
-        WHEN 'admin' THEN 2
-        ELSE 3
-      END,
-      u.displayName COLLATE NOCASE ASC
-  `).all(groupId);
-
-  res.json(members);
-});
-
-app.post("/groups/:id/members", verify, (req, res) => {
-  const groupId = Number(req.params.id);
-  const handle = normalizeHandle(req.body.handle);
-
-  if (!canManageGroup(groupId, req.user.handle)) {
-    return res.status(403).json({ error: "Недостаточно прав" });
-  }
-
-  const user = getUserByHandle(handle);
-  if (!user) {
-    return res.status(404).json({ error: "Пользователь не найден" });
-  }
-
-  const exists = getGroupMember(groupId, handle);
-  if (exists) {
-    return res.status(400).json({ error: "Участник уже в группе" });
-  }
-
-  db.prepare(`
-    INSERT INTO group_members (groupId, userHandle, role)
-    VALUES (?, ?, 'member')
-  `).run(groupId, handle);
-
-  res.json({ ok: true, message: "Участник добавлен" });
-});
-
-app.post("/groups/:id/role", verify, (req, res) => {
-  const groupId = Number(req.params.id);
-  const handle = normalizeHandle(req.body.handle);
-  const role = String(req.body.role || "").trim();
-
-  if (!["member", "admin"].includes(role)) {
-    return res.status(400).json({ error: "Некорректная роль" });
-  }
-
-  const myMember = getGroupMember(groupId, req.user.handle);
-  const targetMember = getGroupMember(groupId, handle);
-
-  if (!myMember || !targetMember) {
-    return res.status(404).json({ error: "Участник не найден" });
-  }
-
-  if (!(myMember.role === "owner" || myMember.role === "admin")) {
-    return res.status(403).json({ error: "Недостаточно прав" });
-  }
-
-  if (targetMember.role === "owner") {
-    return res.status(400).json({ error: "Нельзя изменить владельца" });
-  }
-
-  db.prepare(`
-    UPDATE group_members
-    SET role = ?
-    WHERE groupId = ? AND userHandle = ?
-  `).run(role, groupId, handle);
-
-  res.json({ ok: true, message: "Роль изменена" });
-});
-
-app.get("/groups/:id/messages", verify, (req, res) => {
-  const groupId = Number(req.params.id);
-  const member = getGroupMember(groupId, req.user.handle);
-
-  if (!member) {
-    return res.status(403).json({ error: "Вы не состоите в группе" });
-  }
-
-  const messages = db.prepare(`
-    SELECT
-      m.id,
-      m.sender AS senderHandle,
-      u.displayName AS senderName,
-      m.text,
-      m.createdAt,
-      m.groupId,
-      m.mediaType,
-      m.mediaUrl
-    FROM messages m
-    LEFT JOIN users u ON u.handle = m.sender
-    WHERE m.chatType = 'group'
-      AND m.groupId = ?
-    ORDER BY m.createdAt ASC
-  `).all(groupId);
-
-  res.json(messages);
-});
-
-/* WEBSOCKET */
-
-const onlineUsers = new Map();
-
-wss.on("connection", (ws) => {
-  ws.on("message", (raw) => {
-    try {
-      const data = JSON.parse(raw.toString());
-
-      if (data.type === "join") {
-        const decoded = jwt.verify(data.token, SECRET);
-        const user = db.prepare(`SELECT * FROM users WHERE id = ?`).get(decoded.id);
-        if (!user || isBlocked(user)) return;
-
-        ws.user = user;
-        onlineUsers.set(user.handle, ws);
-        return;
+      let controls = "";
+      if ((group.myRole === "owner" || group.myRole === "admin") && member.role !== "owner") {
+        controls = `
+          <div class="item-actions">
+            <button class="ghost-btn role-btn" data-handle="${escapeHtml(member.handle)}" data-role="admin" type="button">Сделать админом</button>
+            <button class="ghost-btn role-btn" data-handle="${escapeHtml(member.handle)}" data-role="member" type="button">Сделать участником</button>
+          </div>
+        `;
       }
 
-      if (!ws.user) return;
+      const shownName = `${fullName(member)}${member.profileSticker ? " " + member.profileSticker : ""}`;
 
-      const freshUser = getUserByHandle(ws.user.handle);
-      if (!freshUser || isBlocked(freshUser)) {
-        sendJson(ws, { type: "moderation", message: freshUser ? blockText(freshUser) : "Доступ запрещён" });
-        return;
-      }
+      item.innerHTML = `
+        <div class="list-title">${escapeHtml(shownName)} (@${escapeHtml(member.handle)})</div>
+        <div class="list-subtitle">${escapeHtml(member.role)}</div>
+        <div class="list-subtitle">${member.birthDate ? "🎂 " + escapeHtml(member.birthDate) : ""}</div>
+        ${controls}
+      `;
+      membersList.appendChild(item);
+    });
 
-      if (data.type === "privateMessage") {
-        const to = normalizeHandle(data.to);
-        const text = String(data.text || "").trim();
-        const mediaType = String(data.mediaType || "text");
-        const mediaBase64 = data.mediaBase64 || null;
+    membersList.querySelectorAll(".role-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          const data = await api("/groups/" + state.currentGroup.id + "/role", {
+            method: "POST",
+            body: JSON.stringify({
+              handle: btn.dataset.handle,
+              role: btn.dataset.role
+            })
+          });
 
-        if (!to) return;
-        if (!areFriends(freshUser.handle, to)) {
-          sendJson(ws, { type: "moderation", message: "Можно писать только друзьям" });
-          return;
+          showToast(data.message || "Роль изменена");
+          openGroupManager();
+          loadGroups();
+        } catch (err) {
+          showToast(err.message, true);
         }
+      });
+    });
 
-        const isTextOnly = mediaType === "text";
-        if (isTextOnly && !text) return;
-        if (!isTextOnly && !mediaBase64) return;
+    openModal("groupModal");
+  } catch (err) {
+    showToast(err.message, true);
+  }
+}
 
-        if (text) {
-          const moderation = moderateMessage(freshUser.handle, text);
-          if (!moderation.ok) {
-            sendJson(ws, { type: "moderation", message: moderation.message });
-            return;
-          }
-        }
+async function saveGroup() {
+  if (!state.currentGroup) return;
 
-        const createdAt = Date.now();
-        let mediaUrl = null;
+  try {
+    const name = $("groupNameInput").value.trim();
+    const description = $("groupDescriptionInput").value.trim();
 
-        if (!isTextOnly) {
-          mediaUrl = saveBase64Media(mediaBase64, mediaType);
-          if (!mediaUrl) {
-            sendJson(ws, { type: "moderation", message: "Ошибка загрузки медиа" });
-            return;
-          }
-        }
+    const data = await api("/groups/" + state.currentGroup.id, {
+      method: "PUT",
+      body: JSON.stringify({ name, description })
+    });
 
-        db.prepare(`
-          INSERT INTO messages (user1, user2, sender, text, createdAt, chatType, groupId, mediaType, mediaUrl)
-          VALUES (?, ?, ?, ?, ?, 'private', NULL, ?, ?)
-        `).run(
-          freshUser.handle,
-          to,
-          freshUser.handle,
-          text,
-          createdAt,
-          mediaType,
-          mediaUrl
-        );
+    showToast(data.message || "Группа обновлена");
+    closeModal("groupModal");
+    await loadGroups();
+    await openGroupChat({ ...state.currentGroup, name, description });
+  } catch (err) {
+    showToast(err.message, true);
+  }
+}
 
-        const payload = {
-          type: "privateMessage",
-          senderHandle: freshUser.handle,
-          senderName: freshUser.displayName,
-          to,
-          text,
-          createdAt,
-          mediaType,
-          mediaUrl
-        };
+async function addMemberToGroup() {
+  if (!state.currentGroup) return;
 
-        sendJson(ws, payload);
-        sendJson(onlineUsers.get(to), payload);
-      }
+  try {
+    const handle = normalizeHandle($("groupMemberHandleInput").value);
 
-      if (data.type === "groupMessage") {
-        const groupId = Number(data.groupId);
-        const text = String(data.text || "").trim();
-        const mediaType = String(data.mediaType || "text");
-        const mediaBase64 = data.mediaBase64 || null;
-
-        if (!groupId) return;
-
-        const member = getGroupMember(groupId, freshUser.handle);
-        if (!member) {
-          sendJson(ws, { type: "moderation", message: "Вы не участник этой группы" });
-          return;
-        }
-
-        const isTextOnly = mediaType === "text";
-        if (isTextOnly && !text) return;
-        if (!isTextOnly && !mediaBase64) return;
-
-        if (text) {
-          const moderation = moderateMessage(freshUser.handle, text);
-          if (!moderation.ok) {
-            sendJson(ws, { type: "moderation", message: moderation.message });
-            return;
-          }
-        }
-
-        const createdAt = Date.now();
-        let mediaUrl = null;
-
-        if (!isTextOnly) {
-          mediaUrl = saveBase64Media(mediaBase64, mediaType);
-          if (!mediaUrl) {
-            sendJson(ws, { type: "moderation", message: "Ошибка загрузки медиа" });
-            return;
-          }
-        }
-
-        db.prepare(`
-          INSERT INTO messages (user1, user2, sender, text, createdAt, chatType, groupId, mediaType, mediaUrl)
-          VALUES (NULL, NULL, ?, ?, ?, 'group', ?, ?, ?)
-        `).run(
-          freshUser.handle,
-          text,
-          createdAt,
-          groupId,
-          mediaType,
-          mediaUrl
-        );
-
-        const payload = {
-          type: "groupMessage",
-          groupId,
-          senderHandle: freshUser.handle,
-          senderName: freshUser.displayName,
-          text,
-          createdAt,
-          mediaType,
-          mediaUrl
-        };
-
-        const members = db.prepare(`
-          SELECT userHandle FROM group_members WHERE groupId = ?
-        `).all(groupId);
-
-        members.forEach((m) => sendJson(onlineUsers.get(m.userHandle), payload));
-      }
-    } catch (err) {
-      console.log("WS error:", err.message);
+    if (!handle) {
+      showToast("Введи юзернейм", true);
+      return;
     }
+
+    const data = await api("/groups/" + state.currentGroup.id + "/members", {
+      method: "POST",
+      body: JSON.stringify({ handle })
+    });
+
+    showToast(data.message || "Участник добавлен");
+    $("groupMemberHandleInput").value = "";
+    openGroupManager();
+  } catch (err) {
+    showToast(err.message, true);
+  }
+}
+
+function setupBottomNav() {
+  const chatsBtn = $("navChatsBtn");
+  const groupsBtn = $("navGroupsBtn");
+  const profileBtn = $("navProfileBtn");
+  const menuBtn = $("navMenuBtn");
+
+  const profileSection = $("profileSection");
+  const chatsSection = $("chatsSection");
+  const groupsSection = $("groupsSection");
+  const topAnchor = $("sidebarTopAnchor");
+
+  function setActive(btn) {
+    [chatsBtn, groupsBtn, profileBtn, menuBtn].forEach((b) => b?.classList.remove("active"));
+    btn?.classList.add("active");
+  }
+
+  chatsBtn?.addEventListener("click", () => {
+    setActive(chatsBtn);
+    chatsSection?.scrollIntoView({ behavior: "smooth", block: "start" });
   });
 
-  ws.on("close", () => {
-    if (ws.user?.handle) {
-      onlineUsers.delete(ws.user.handle);
+  groupsBtn?.addEventListener("click", () => {
+    setActive(groupsBtn);
+    groupsSection?.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+
+  profileBtn?.addEventListener("click", () => {
+    setActive(profileBtn);
+    profileSection?.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+
+  menuBtn?.addEventListener("click", () => {
+    setActive(menuBtn);
+    topAnchor?.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+}
+
+async function initChatPage() {
+  if (!state.token) {
+    window.location.href = "index.html";
+    return;
+  }
+
+  try {
+    await loadProfile();
+    await loadPrivateChats();
+    await loadGroups();
+    connectSocket();
+    setupBottomNav();
+
+    $("logoutBtn")?.addEventListener("click", logout);
+    $("friendSearchBtn")?.addEventListener("click", searchUsers);
+    $("createGroupBtn")?.addEventListener("click", createGroup);
+    $("sendBtn")?.addEventListener("click", sendMessage);
+    $("messageInput")?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") sendMessage();
+    });
+
+    $("attachBtn")?.addEventListener("click", () => $("fileInput").click());
+    $("fileInput")?.addEventListener("change", async (e) => {
+      const file = e.target.files[0];
+      if (file) await sendMediaFile(file);
+      e.target.value = "";
+    });
+
+    $("recordVoiceBtn")?.addEventListener("click", toggleVoiceRecording);
+
+    $("openProfileBtn")?.addEventListener("click", () => openModal("profileModal"));
+    $("closeProfileBtn")?.addEventListener("click", () => closeModal("profileModal"));
+    $("saveProfileBtn")?.addEventListener("click", saveProfile);
+
+    $("manageGroupBtn")?.addEventListener("click", openGroupManager);
+    $("closeGroupBtn")?.addEventListener("click", () => closeModal("groupModal"));
+    $("saveGroupBtn")?.addEventListener("click", saveGroup);
+    $("addGroupMemberBtn")?.addEventListener("click", addMemberToGroup);
+
+    $("openSidebarBtn")?.addEventListener("click", () => toggleSidebar(true));
+    $("closeSidebarBtn")?.addEventListener("click", () => toggleSidebar(false));
+  } catch (err) {
+    showToast(err.message, true);
+    if (String(err.message).toLowerCase().includes("токен")) {
+      logout();
     }
-  });
-});
+  }
+}
 
-server.listen(PORT, () => {
-  console.log("Server running on port " + PORT);
+document.addEventListener("DOMContentLoaded", () => {
+  if (isChatPage) {
+    initChatPage();
+  } else {
+    initAuthPage();
+  }
 });
