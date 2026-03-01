@@ -3,131 +3,178 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>OneMessenger Chat</title>
+  <title>One Messenger</title>
   <link rel="stylesheet" href="style.css" />
 </head>
-<body class="chat-page">
+<body class="app-body">
   <div class="app-shell">
     <aside id="sidebar" class="sidebar">
-      <div class="sidebar-top">
-        <div>
-          <div class="brand">OneMessenger</div>
-          <div class="brand-sub">без SIM</div>
+      <div class="sidebar-header">
+        <div class="brand-wrap">
+          <div class="brand-logo">O</div>
+          <div>
+            <div class="brand-title">One Messenger</div>
+            <div class="brand-subtitle">без номера телефона</div>
+          </div>
         </div>
-        <button id="mobileCloseSidebar" class="ghost-btn mobile-only" type="button">✕</button>
+        <button id="closeSidebarBtn" class="icon-btn mobile-only" type="button">✕</button>
       </div>
 
-      <div class="card">
-        <div class="section-title">Ваш профиль</div>
-        <div id="selfName" class="profile-name">Пользователь</div>
-        <div id="selfHandle" class="profile-handle">@username</div>
-        <div id="selfBio" class="profile-bio">Без описания</div>
-        <div class="row gap">
-          <button id="openProfileBtn" class="ghost-btn" type="button">Изменить профиль</button>
+      <div class="profile-card">
+        <div class="profile-card-top">
+          <div class="avatar avatar-lg">
+            <img id="selfAvatar" alt="avatar" />
+            <div id="selfAvatarFallback" class="avatar-fallback">U</div>
+          </div>
+          <div class="profile-mini">
+            <div id="selfName" class="profile-name">Пользователь</div>
+            <div id="selfHandle" class="profile-handle">@username</div>
+            <div id="selfDob" class="profile-dob">Дата рождения не указана</div>
+          </div>
+        </div>
+        <div class="button-row">
+          <button id="openProfileBtn" class="secondary-btn" type="button">Профиль</button>
           <button id="logoutBtn" class="danger-btn" type="button">Выйти</button>
         </div>
       </div>
 
-      <div class="card">
-        <div class="section-title">Добавить друга</div>
-        <div class="row gap">
+      <div class="panel">
+        <div class="panel-title">Истории</div>
+        <div class="story-create">
+          <input id="storyTextInput" placeholder="Подпись к истории" />
+          <input id="storyFileInput" type="file" accept="image/*,video/*" />
+          <button id="createStoryBtn" class="primary-btn full-btn" type="button">Выложить историю</button>
+        </div>
+        <div id="storiesList" class="stories-strip"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Поиск по юзернейму</div>
+        <div class="inline-controls">
           <input id="friendSearchInput" placeholder="@username" />
           <button id="friendSearchBtn" class="primary-btn" type="button">Найти</button>
         </div>
         <div id="searchResults" class="stack"></div>
       </div>
 
-      <div class="card">
-        <div class="section-title">Создать группу</div>
-        <input id="newGroupName" placeholder="Название группы" />
-        <textarea id="newGroupDescription" rows="2" placeholder="Описание группы"></textarea>
-        <button id="createGroupBtn" class="primary-btn full" type="button">Создать группу</button>
+      <div class="panel">
+        <div class="panel-title">Создать группу</div>
+        <div class="stack">
+          <input id="newGroupName" placeholder="Название группы" />
+          <textarea id="newGroupDescription" rows="2" placeholder="Описание группы"></textarea>
+          <input id="newGroupMedia" type="file" accept="image/*,video/*" />
+          <button id="createGroupBtn" class="primary-btn full-btn" type="button">Создать группу</button>
+        </div>
       </div>
 
-      <div class="card grow">
-        <div class="section-title">Личные чаты</div>
+      <div class="panel grow-panel">
+        <div class="panel-title">Личные чаты</div>
         <div id="friendsList" class="stack"></div>
 
-        <div class="section-title mt">Группы</div>
+        <div class="panel-title panel-title-gap">Группы</div>
         <div id="groupsList" class="stack"></div>
+      </div>
+
+      <div class="panel">
+        <div class="button-row">
+          <a class="secondary-btn center-link" href="support.html">Поддержка</a>
+          <button id="themeToggleBtn" class="secondary-btn" type="button">Тема</button>
+        </div>
       </div>
     </aside>
 
     <main class="chat-main">
       <header class="chat-header">
-        <div class="row gap">
-          <button id="mobileOpenSidebar" class="ghost-btn mobile-only" type="button">☰</button>
-          <div>
+        <div class="chat-header-left">
+          <button id="openSidebarBtn" class="icon-btn mobile-only" type="button">☰</button>
+          <div class="chat-head-meta">
             <div id="chatTitle" class="chat-title">Выберите чат</div>
-            <div id="chatSubtitle" class="chat-subtitle">Личные сообщения и группы</div>
+            <div id="chatSubtitle" class="chat-subtitle">Истории, медиа, группы и сообщения</div>
           </div>
         </div>
 
-        <div class="row gap">
-          <button id="manageGroupBtn" class="ghost-btn hidden" type="button">Управление группой</button>
+        <div class="button-row">
+          <button id="manageGroupBtn" class="secondary-btn hidden" type="button">Управление группой</button>
+          <button id="viewProfileBtn" class="secondary-btn hidden" type="button">Профиль</button>
         </div>
       </header>
 
       <section id="messages" class="messages">
-        <div class="empty-state">Выберите человека или группу ✨</div>
+        <div class="empty-state">Выберите диалог или группу ✨</div>
       </section>
 
       <footer class="composer">
         <input id="messageInput" placeholder="Напишите сообщение..." />
+        <input id="chatMediaInput" type="file" accept="image/*,video/*" class="hidden-file" />
+        <button id="attachBtn" class="secondary-btn" type="button">📎</button>
+        <button id="recordVoiceBtn" class="secondary-btn" type="button">🎙</button>
         <button id="sendBtn" class="primary-btn" type="button">Отправить</button>
       </footer>
     </main>
   </div>
 
-  <div id="profileModal" class="modal">
+  <div id="profileModal" class="modal hidden">
     <div class="modal-card">
-      <div class="modal-head">
+      <div class="modal-header">
         <h3>Редактировать профиль</h3>
-        <button id="closeProfileBtn" class="ghost-btn" type="button">✕</button>
+        <button class="icon-btn" data-close-modal="profileModal" type="button">✕</button>
       </div>
 
       <div class="stack">
-        <label>Имя</label>
+        <div class="profile-avatar-editor">
+          <div class="avatar avatar-xl">
+            <img id="profileAvatarPreview" alt="avatar preview" />
+            <div id="profileAvatarPreviewFallback" class="avatar-fallback">U</div>
+          </div>
+          <input id="profileAvatarInput" type="file" accept="image/*,video/*" />
+        </div>
+
         <input id="profileNameInput" placeholder="Ваше имя" />
-
-        <label>Юзернейм</label>
         <input id="profileHandleInput" placeholder="Юзернейм" />
-
-        <label>Описание</label>
+        <input id="profileDobInput" type="date" />
         <textarea id="profileBioInput" rows="4" placeholder="О себе"></textarea>
 
-        <button id="saveProfileBtn" class="primary-btn full" type="button">Сохранить</button>
+        <button id="saveProfileBtn" class="primary-btn full-btn" type="button">Сохранить профиль</button>
       </div>
     </div>
   </div>
 
-  <div id="groupModal" class="modal">
-    <div class="modal-card">
-      <div class="modal-head">
+  <div id="groupModal" class="modal hidden">
+    <div class="modal-card modal-card-lg">
+      <div class="modal-header">
         <h3>Управление группой</h3>
-        <button id="closeGroupBtn" class="ghost-btn" type="button">✕</button>
+        <button class="icon-btn" data-close-modal="groupModal" type="button">✕</button>
       </div>
 
       <div class="stack">
-        <label>Название группы</label>
-        <input id="groupNameInput" placeholder="Название" />
+        <input id="groupNameInput" placeholder="Название группы" />
+        <textarea id="groupDescriptionInput" rows="3" placeholder="Описание группы"></textarea>
+        <input id="groupMediaInput" type="file" accept="image/*,video/*" />
 
-        <label>Описание группы</label>
-        <textarea id="groupDescriptionInput" rows="3" placeholder="Описание"></textarea>
+        <div class="button-row">
+          <button id="saveGroupBtn" class="primary-btn" type="button">Сохранить</button>
+          <button id="transferOwnerBtn" class="secondary-btn" type="button">Назначить владельца</button>
+        </div>
 
-        <button id="saveGroupBtn" class="primary-btn full" type="button">Сохранить группу</button>
-
-        <hr />
-
-        <label>Добавить участника по юзернейму</label>
-        <div class="row gap">
+        <div class="panel-title">Добавить участника</div>
+        <div class="inline-controls">
           <input id="groupMemberHandleInput" placeholder="@username" />
           <button id="addGroupMemberBtn" class="primary-btn" type="button">Добавить</button>
         </div>
 
-        <div class="section-title">Участники</div>
+        <div class="panel-title">Участники</div>
         <div id="groupMembersList" class="stack"></div>
       </div>
+    </div>
+  </div>
+
+  <div id="viewerModal" class="modal hidden">
+    <div class="modal-card modal-card-lg">
+      <div class="modal-header">
+        <h3 id="viewerTitle">Просмотр</h3>
+        <button class="icon-btn" data-close-modal="viewerModal" type="button">✕</button>
+      </div>
+      <div id="viewerBody" class="viewer-body"></div>
     </div>
   </div>
 
