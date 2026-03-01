@@ -73,12 +73,13 @@
         <div class="empty-state">Выберите друга или группу ✨</div>
       </section>
 
-      <footer class="composer">
-        <input id="messageInput" placeholder="Напишите сообщение..." />
-        <button id="sendBtn" class="primary-btn" type="button">Отправить</button>
-      </footer>
-    </main>
-  </div>
+     <footer class="composer">
+  <input id="messageInput" placeholder="Напишите сообщение..." />
+  <input id="fileInput" type="file" accept="image/*,video/*" class="hidden" />
+  <button id="attachBtn" class="ghost-btn" type="button">📎</button>
+  <button id="recordVoiceBtn" class="ghost-btn" type="button">🎙</button>
+  <button id="sendBtn" class="primary-btn" type="button">Отправить</button>
+</footer>
 
   <div id="profileModal" class="modal hidden">
     <div class="modal-card">
