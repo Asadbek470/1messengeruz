@@ -529,3 +529,39 @@ textarea:focus {
     max-width: 90%;
   }
 }
+
+.message-media {
+  margin-top: 8px;
+}
+
+.message-media img,
+.message-media video {
+  max-width: 100%;
+  max-height: 320px;
+  border-radius: 14px;
+  display: block;
+}
+
+.message-audio {
+  margin-top: 8px;
+  width: 100%;
+}
+
+.composer {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto;
+  gap: 12px;
+  padding: 14px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+@media (max-width: 820px) {
+  .composer {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  #messageInput {
+    grid-column: 1 / -1;
+  }
+}
