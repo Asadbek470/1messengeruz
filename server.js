@@ -74,6 +74,11 @@ safeAlter(`ALTER TABLE users ADD COLUMN handle TEXT`);
 safeAlter(`ALTER TABLE users ADD COLUMN bio TEXT DEFAULT ''`);
 safeAlter(`ALTER TABLE users ADD COLUMN blockedUntil INTEGER DEFAULT 0`);
 safeAlter(`ALTER TABLE users ADD COLUMN strikes INTEGER DEFAULT 0`);
+safeAlter(`ALTER TABLE users ADD COLUMN firstName TEXT DEFAULT ''`);
+safeAlter(`ALTER TABLE users ADD COLUMN lastName TEXT DEFAULT ''`);
+safeAlter(`ALTER TABLE users ADD COLUMN middleName TEXT DEFAULT ''`);
+safeAlter(`ALTER TABLE users ADD COLUMN birthDate TEXT DEFAULT ''`);
+safeAlter(`ALTER TABLE users ADD COLUMN profileSticker TEXT DEFAULT ''`);
 
 safeAlter(`ALTER TABLE messages ADD COLUMN chatType TEXT DEFAULT 'private'`);
 safeAlter(`ALTER TABLE messages ADD COLUMN groupId INTEGER`);
@@ -129,7 +134,7 @@ function normalizeHandle(value = "") {
 
 function getUserByHandle(handle) {
   return db.prepare(`
-    SELECT id, username, password, displayName, handle, bio, blockedUntil, strikes
+    SELECT *
     FROM users
     WHERE handle = ?
   `).get(normalizeHandle(handle));
@@ -192,9 +197,7 @@ function moderateMessage(userHandle, text) {
   const lowered = String(text || "").toLowerCase();
   const found = bannedTerms.find((term) => lowered.includes(term));
 
-  if (!found) {
-    return { ok: true };
-  }
+  if (!found) return { ok: true };
 
   const user = getUserByHandle(userHandle);
   const newStrikes = Number(user.strikes || 0) + 1;
@@ -209,7 +212,6 @@ function moderateMessage(userHandle, text) {
 
     return {
       ok: false,
-      blocked: true,
       message: `Вы нарушили правила 3 раза. Аккаунт заблокирован на 3 дня. Причина: "${found}".`
     };
   }
@@ -222,7 +224,6 @@ function moderateMessage(userHandle, text) {
 
   return {
     ok: false,
-    blocked: false,
     message: `Сообщение отклонено из-за запрещённого слова/фразы: "${found}". Нарушение ${newStrikes}/3.`
   };
 }
@@ -266,7 +267,6 @@ function saveBase64Media(base64String, mediaType) {
   const base64Data = match[2];
 
   let ext = "bin";
-
   if (mimeType.includes("jpeg")) ext = "jpg";
   else if (mimeType.includes("jpg")) ext = "jpg";
   else if (mimeType.includes("png")) ext = "png";
@@ -312,8 +312,12 @@ app.post("/register", async (req, res) => {
   const hash = await bcrypt.hash(password, 10);
 
   const result = db.prepare(`
-    INSERT INTO users (username, password, displayName, handle, bio, blockedUntil, strikes)
-    VALUES (?, ?, ?, ?, '', 0, 0)
+    INSERT INTO users (
+      username, password, displayName, handle, bio,
+      blockedUntil, strikes,
+      firstName, lastName, middleName, birthDate, profileSticker
+    )
+    VALUES (?, ?, ?, ?, '', 0, 0, '', '', '', '', '')
   `).run(displayName, hash, displayName, handle);
 
   const user = db.prepare(`SELECT * FROM users WHERE id = ?`).get(result.lastInsertRowid);
@@ -352,7 +356,12 @@ app.get("/me", verify, (req, res) => {
     id: req.user.id,
     displayName: req.user.displayName,
     handle: req.user.handle,
-    bio: req.user.bio || ""
+    bio: req.user.bio || "",
+    firstName: req.user.firstName || "",
+    lastName: req.user.lastName || "",
+    middleName: req.user.middleName || "",
+    birthDate: req.user.birthDate || "",
+    profileSticker: req.user.profileSticker || ""
   });
 });
 
@@ -360,6 +369,12 @@ app.put("/me", verify, (req, res) => {
   const displayName = String(req.body.displayName || "").trim();
   const handle = normalizeHandle(req.body.handle);
   const bio = String(req.body.bio || "").trim().slice(0, 300);
+
+  const firstName = String(req.body.firstName || "").trim().slice(0, 100);
+  const lastName = String(req.body.lastName || "").trim().slice(0, 100);
+  const middleName = String(req.body.middleName || "").trim().slice(0, 100);
+  const birthDate = String(req.body.birthDate || "").trim().slice(0, 20);
+  const profileSticker = String(req.body.profileSticker || "").trim().slice(0, 20);
 
   if (!displayName || !handle) {
     return res.status(400).json({ error: "Имя и юзернейм обязательны" });
@@ -379,9 +394,27 @@ app.put("/me", verify, (req, res) => {
 
   db.prepare(`
     UPDATE users
-    SET displayName = ?, handle = ?, bio = ?
+    SET
+      displayName = ?,
+      handle = ?,
+      bio = ?,
+      firstName = ?,
+      lastName = ?,
+      middleName = ?,
+      birthDate = ?,
+      profileSticker = ?
     WHERE id = ?
-  `).run(displayName, handle, bio, req.user.id);
+  `).run(
+    displayName,
+    handle,
+    bio,
+    firstName,
+    lastName,
+    middleName,
+    birthDate,
+    profileSticker,
+    req.user.id
+  );
 
   db.prepare(`UPDATE friends SET user1 = ? WHERE user1 = ?`).run(handle, req.user.handle);
   db.prepare(`UPDATE friends SET user2 = ? WHERE user2 = ?`).run(handle, req.user.handle);
@@ -400,14 +433,14 @@ app.put("/me", verify, (req, res) => {
   });
 });
 
-/* USERS / FRIENDS */
+/* USERS / FRIENDS / CHATS */
 
 app.get("/users/search", verify, (req, res) => {
   const q = normalizeHandle(req.query.q || "");
   if (!q) return res.json([]);
 
   const users = db.prepare(`
-    SELECT displayName, handle, bio
+    SELECT displayName, handle, bio, firstName, lastName, middleName, birthDate, profileSticker
     FROM users
     WHERE handle LIKE ?
       AND handle != ?
@@ -439,7 +472,15 @@ app.post("/add-friend", verify, (req, res) => {
 
 app.get("/friends", verify, (req, res) => {
   const friends = db.prepare(`
-    SELECT u.displayName, u.handle, u.bio
+    SELECT
+      u.displayName,
+      u.handle,
+      u.bio,
+      u.firstName,
+      u.lastName,
+      u.middleName,
+      u.birthDate,
+      u.profileSticker
     FROM friends f
     JOIN users u ON u.handle = f.user2
     WHERE f.user1 = ?
@@ -447,6 +488,78 @@ app.get("/friends", verify, (req, res) => {
   `).all(req.user.handle);
 
   res.json(friends);
+});
+
+app.get("/private-chats", verify, (req, res) => {
+  const handles = new Set();
+
+  const fromFriends = db.prepare(`
+    SELECT user2 AS handle
+    FROM friends
+    WHERE user1 = ?
+  `).all(req.user.handle);
+
+  fromFriends.forEach((row) => handles.add(row.handle));
+
+  const fromMessages = db.prepare(`
+    SELECT DISTINCT
+      CASE
+        WHEN user1 = ? THEN user2
+        ELSE user1
+      END AS handle
+    FROM messages
+    WHERE chatType = 'private'
+      AND (user1 = ? OR user2 = ?)
+      AND user1 IS NOT NULL
+      AND user2 IS NOT NULL
+  `).all(req.user.handle, req.user.handle, req.user.handle);
+
+  fromMessages.forEach((row) => {
+    if (row.handle) handles.add(row.handle);
+  });
+
+  const result = [];
+
+  for (const handle of handles) {
+    const user = db.prepare(`
+      SELECT displayName, handle, bio, firstName, lastName, middleName, birthDate, profileSticker
+      FROM users
+      WHERE handle = ?
+    `).get(handle);
+
+    if (!user) continue;
+
+    const lastMessage = db.prepare(`
+      SELECT text, createdAt, mediaType
+      FROM messages
+      WHERE chatType = 'private'
+        AND (
+          (user1 = ? AND user2 = ?)
+          OR
+          (user1 = ? AND user2 = ?)
+        )
+      ORDER BY createdAt DESC
+      LIMIT 1
+    `).get(req.user.handle, handle, handle, req.user.handle);
+
+    result.push({
+      displayName: user.displayName,
+      handle: user.handle,
+      bio: user.bio || "",
+      firstName: user.firstName || "",
+      lastName: user.lastName || "",
+      middleName: user.middleName || "",
+      birthDate: user.birthDate || "",
+      profileSticker: user.profileSticker || "",
+      lastMessageText: lastMessage?.text || "",
+      lastMessageType: lastMessage?.mediaType || "text",
+      lastMessageAt: lastMessage?.createdAt || 0
+    });
+  }
+
+  result.sort((a, b) => Number(b.lastMessageAt || 0) - Number(a.lastMessageAt || 0));
+
+  res.json(result);
 });
 
 /* PRIVATE MESSAGES */
@@ -565,7 +678,7 @@ app.get("/groups/:id/members", verify, (req, res) => {
   }
 
   const members = db.prepare(`
-    SELECT gm.userHandle AS handle, gm.role, u.displayName
+    SELECT gm.userHandle AS handle, gm.role, u.displayName, u.firstName, u.lastName, u.middleName, u.birthDate, u.profileSticker
     FROM group_members gm
     JOIN users u ON u.handle = gm.userHandle
     WHERE gm.groupId = ?
