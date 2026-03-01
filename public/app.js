@@ -1,11 +1,11 @@
-const token = localStorage.getItem("token");
 const isChatPage = location.pathname.includes("chat");
 
 const state = {
   currentChat: null,
   currentGroup: null,
   ws: null,
-  me: null
+  me: null,
+  token: localStorage.getItem("token")
 };
 
 function $(id) {
@@ -33,23 +33,6 @@ function normalizeHandle(value = "") {
   return String(value).trim().replace(/^@+/, "").toLowerCase();
 }
 
-function decodeToken(jwtToken) {
-  try {
-    return JSON.parse(atob(jwtToken.split(".")[1]));
-  } catch {
-    return null;
-  }
-}
-
-function escapeHtml(text = "") {
-  return String(text)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
 async function api(url, options = {}) {
   const headers = { ...(options.headers || {}) };
 
@@ -57,8 +40,8 @@ async function api(url, options = {}) {
     headers["Content-Type"] = "application/json";
   }
 
-  if (token) {
-    headers.Authorization = "Bearer " + token;
+  if (state.token) {
+    headers.Authorization = "Bearer " + state.token;
   }
 
   const response = await fetch(url, { ...options, headers });
@@ -95,6 +78,7 @@ async function login() {
       body: JSON.stringify({ identifier, password })
     });
 
+    state.token = data.token;
     localStorage.setItem("token", data.token);
     window.location.href = "chat.html";
   } catch (err) {
@@ -118,6 +102,7 @@ async function register() {
       body: JSON.stringify({ displayName, handle, password })
     });
 
+    state.token = data.token;
     localStorage.setItem("token", data.token);
     window.location.href = "chat.html";
   } catch (err) {
@@ -150,6 +135,7 @@ function initAuthPage() {
 
 function logout() {
   localStorage.removeItem("token");
+  state.token = null;
   window.location.href = "index.html";
 }
 
@@ -182,6 +168,15 @@ function formatTime(ts) {
     hour: "2-digit",
     minute: "2-digit"
   });
+}
+
+function escapeHtml(text = "") {
+  return String(text)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
 function renderMessage(msg) {
@@ -233,6 +228,7 @@ async function saveProfile() {
     });
 
     if (data.token) {
+      state.token = data.token;
       localStorage.setItem("token", data.token);
     }
 
@@ -240,6 +236,13 @@ async function saveProfile() {
     closeModal("profileModal");
     await loadProfile();
     await loadFriends();
+
+    if (state.ws) {
+      try {
+        state.ws.close();
+      } catch {}
+      connectSocket();
+    }
   } catch (err) {
     showToast(err.message, true);
   }
@@ -398,6 +401,8 @@ async function openGroupChat(group) {
 }
 
 function connectSocket() {
+  if (!state.token) return;
+
   state.ws = new WebSocket(
     location.protocol === "https:"
       ? "wss://" + location.host
@@ -405,7 +410,7 @@ function connectSocket() {
   );
 
   state.ws.onopen = () => {
-    state.ws.send(JSON.stringify({ type: "join", token }));
+    state.ws.send(JSON.stringify({ type: "join", token: state.token }));
   };
 
   state.ws.onmessage = (event) => {
@@ -414,7 +419,7 @@ function connectSocket() {
     if (data.type === "privateMessage") {
       if (
         state.currentChat?.type === "private" &&
-        (data.senderHandle === state.currentChat.handle || data.to === state.currentChat.handle)
+        data.senderHandle === state.currentChat.handle
       ) {
         $("messages").appendChild(renderMessage(data));
         scrollMessages();
@@ -439,7 +444,9 @@ function connectSocket() {
   };
 
   state.ws.onclose = () => {
-    setTimeout(connectSocket, 1500);
+    setTimeout(() => {
+      if (state.token) connectSocket();
+    }, 1500);
   };
 }
 
@@ -462,6 +469,15 @@ function sendMessage() {
         text
       })
     );
+
+    $("messages").appendChild(
+      renderMessage({
+        senderHandle: state.me.handle,
+        senderName: state.me.displayName,
+        text,
+        createdAt: Date.now()
+      })
+    );
   }
 
   if (state.currentChat.type === "group") {
@@ -475,6 +491,7 @@ function sendMessage() {
   }
 
   input.value = "";
+  scrollMessages();
 }
 
 async function createGroup() {
@@ -519,15 +536,13 @@ async function openGroupManager() {
       item.className = "list-item";
 
       let controls = "";
-      if (group.myRole === "owner" || group.myRole === "admin") {
-        if (member.role !== "owner") {
-          controls = `
-            <div class="item-actions">
-              <button class="ghost-btn role-btn" data-handle="${escapeHtml(member.handle)}" data-role="admin" type="button">Сделать админом</button>
-              <button class="ghost-btn role-btn" data-handle="${escapeHtml(member.handle)}" data-role="member" type="button">Сделать участником</button>
-            </div>
-          `;
-        }
+      if ((group.myRole === "owner" || group.myRole === "admin") && member.role !== "owner") {
+        controls = `
+          <div class="item-actions">
+            <button class="ghost-btn role-btn" data-handle="${escapeHtml(member.handle)}" data-role="admin" type="button">Сделать админом</button>
+            <button class="ghost-btn role-btn" data-handle="${escapeHtml(member.handle)}" data-role="member" type="button">Сделать участником</button>
+          </div>
+        `;
       }
 
       item.innerHTML = `
@@ -579,6 +594,7 @@ async function saveGroup() {
     showToast(data.message || "Группа обновлена");
     closeModal("groupModal");
     await loadGroups();
+    await openGroupChat({ ...state.currentGroup, name, description });
   } catch (err) {
     showToast(err.message, true);
   }
@@ -609,16 +625,16 @@ async function addMemberToGroup() {
 }
 
 async function initChatPage() {
-  if (!token) {
+  if (!state.token) {
     window.location.href = "index.html";
     return;
   }
 
   try {
-    connectSocket();
     await loadProfile();
     await loadFriends();
     await loadGroups();
+    connectSocket();
 
     $("logoutBtn")?.addEventListener("click", logout);
     $("friendSearchBtn")?.addEventListener("click", searchUsers);
