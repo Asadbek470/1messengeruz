@@ -238,7 +238,7 @@ textarea:focus {
 }
 
 .sidebar-top,
-chat-header,
+.chat-header,
 .modal-header {
   align-items: center;
 }
