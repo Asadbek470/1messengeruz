@@ -5,7 +5,10 @@ const state = {
   currentGroup: null,
   ws: null,
   me: null,
-  token: localStorage.getItem("token")
+  token: localStorage.getItem("token"),
+  mediaRecorder: null,
+  recordedChunks: [],
+  isRecording: false
 };
 
 function $(id) {
@@ -53,8 +56,6 @@ async function api(url, options = {}) {
 
   return data;
 }
-
-/* ---------- AUTH ---------- */
 
 function switchAuth(mode) {
   $("loginView").classList.toggle("active", mode === "login");
@@ -131,8 +132,6 @@ function initAuthPage() {
   });
 }
 
-/* ---------- CHAT ---------- */
-
 function logout() {
   localStorage.removeItem("token");
   state.token = null;
@@ -179,6 +178,31 @@ function escapeHtml(text = "") {
     .replaceAll("'", "&#039;");
 }
 
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function renderMedia(msg) {
+  if (msg.mediaType === "image" && msg.mediaUrl) {
+    return `<div class="message-media"><img src="${escapeHtml(msg.mediaUrl)}" alt="image"></div>`;
+  }
+
+  if (msg.mediaType === "video" && msg.mediaUrl) {
+    return `<div class="message-media"><video controls src="${escapeHtml(msg.mediaUrl)}"></video></div>`;
+  }
+
+  if (msg.mediaType === "audio" && msg.mediaUrl) {
+    return `<audio class="message-audio" controls src="${escapeHtml(msg.mediaUrl)}"></audio>`;
+  }
+
+  return "";
+}
+
 function renderMessage(msg) {
   const myHandle = state.me?.handle;
   const mine = msg.senderHandle === myHandle;
@@ -191,7 +215,8 @@ function renderMessage(msg) {
       <div class="message-meta">
         ${mine ? "Вы" : escapeHtml(msg.senderName || msg.senderHandle)} • ${formatTime(msg.createdAt)}
       </div>
-      <div>${escapeHtml(msg.text || "")}</div>
+      ${msg.text ? `<div>${escapeHtml(msg.text)}</div>` : ""}
+      ${renderMedia(msg)}
     </div>
   `;
 
@@ -419,7 +444,7 @@ function connectSocket() {
     if (data.type === "privateMessage") {
       if (
         state.currentChat?.type === "private" &&
-        data.senderHandle === state.currentChat.handle
+        (data.senderHandle === state.currentChat.handle || data.to === state.currentChat.handle)
       ) {
         $("messages").appendChild(renderMessage(data));
         scrollMessages();
@@ -462,36 +487,115 @@ function sendMessage() {
   if (!text) return;
 
   if (state.currentChat.type === "private") {
-    state.ws.send(
-      JSON.stringify({
-        type: "privateMessage",
-        to: state.currentChat.handle,
-        text
-      })
-    );
+    state.ws.send(JSON.stringify({
+      type: "privateMessage",
+      to: state.currentChat.handle,
+      text,
+      mediaType: "text"
+    }));
 
     $("messages").appendChild(
       renderMessage({
         senderHandle: state.me.handle,
         senderName: state.me.displayName,
         text,
-        createdAt: Date.now()
+        createdAt: Date.now(),
+        mediaType: "text"
       })
     );
   }
 
   if (state.currentChat.type === "group") {
-    state.ws.send(
-      JSON.stringify({
-        type: "groupMessage",
-        groupId: state.currentChat.id,
-        text
-      })
-    );
+    state.ws.send(JSON.stringify({
+      type: "groupMessage",
+      groupId: state.currentChat.id,
+      text,
+      mediaType: "text"
+    }));
   }
 
   input.value = "";
   scrollMessages();
+}
+
+async function sendMediaFile(file) {
+  try {
+    if (!state.currentChat) {
+      showToast("Сначала выбери чат", true);
+      return;
+    }
+
+    const base64 = await fileToBase64(file);
+
+    let mediaType = "image";
+    if (file.type.startsWith("video/")) mediaType = "video";
+    if (file.type.startsWith("audio/")) mediaType = "audio";
+
+    if (state.currentChat.type === "private") {
+      state.ws.send(JSON.stringify({
+        type: "privateMessage",
+        to: state.currentChat.handle,
+        text: "",
+        mediaType,
+        mediaBase64: base64
+      }));
+    }
+
+    if (state.currentChat.type === "group") {
+      state.ws.send(JSON.stringify({
+        type: "groupMessage",
+        groupId: state.currentChat.id,
+        text: "",
+        mediaType,
+        mediaBase64: base64
+      }));
+    }
+  } catch (err) {
+    showToast("Ошибка отправки файла", true);
+  }
+}
+
+async function toggleVoiceRecording() {
+  try {
+    if (!state.currentChat) {
+      showToast("Сначала выбери чат", true);
+      return;
+    }
+
+    const btn = $("recordVoiceBtn");
+
+    if (state.isRecording && state.mediaRecorder) {
+      state.mediaRecorder.stop();
+      state.isRecording = false;
+      btn.textContent = "🎙";
+      return;
+    }
+
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    state.recordedChunks = [];
+
+    const recorder = new MediaRecorder(stream);
+    state.mediaRecorder = recorder;
+
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        state.recordedChunks.push(event.data);
+      }
+    };
+
+    recorder.onstop = async () => {
+      const blob = new Blob(state.recordedChunks, { type: "audio/webm" });
+      const file = new File([blob], `voice-${Date.now()}.webm`, { type: "audio/webm" });
+      await sendMediaFile(file);
+      stream.getTracks().forEach((track) => track.stop());
+    };
+
+    recorder.start();
+    state.isRecording = true;
+    btn.textContent = "⏹";
+  } catch (err) {
+    showToast("Не удалось включить микрофон", true);
+  }
 }
 
 async function createGroup() {
@@ -643,6 +747,15 @@ async function initChatPage() {
     $("messageInput")?.addEventListener("keydown", (e) => {
       if (e.key === "Enter") sendMessage();
     });
+
+    $("attachBtn")?.addEventListener("click", () => $("fileInput").click());
+    $("fileInput")?.addEventListener("change", async (e) => {
+      const file = e.target.files[0];
+      if (file) await sendMediaFile(file);
+      e.target.value = "";
+    });
+
+    $("recordVoiceBtn")?.addEventListener("click", toggleVoiceRecording);
 
     $("openProfileBtn")?.addEventListener("click", () => openModal("profileModal"));
     $("closeProfileBtn")?.addEventListener("click", () => closeModal("profileModal"));
